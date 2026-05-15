@@ -71,8 +71,13 @@ function App() {
 
   useEffect(() => { loadItems(); }, [loadItems]);
   useEffect(() => {
-    const interval = setInterval(loadItems, 2000);
-    return () => clearInterval(interval);
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const start = () => { if (!interval) interval = setInterval(loadItems, 2000); };
+    const stop = () => { if (interval) { clearInterval(interval); interval = null; } };
+    const onVisibility = () => { document.hidden ? stop() : start(); };
+    if (!document.hidden) start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => { stop(); document.removeEventListener("visibilitychange", onVisibility); };
   }, [loadItems]);
   useEffect(() => { inputRef.current?.focus(); }, []);
 

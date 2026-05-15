@@ -45,6 +45,7 @@ pub fn start_monitor(db: Arc<Database>) {
         let mut clipboard = Clipboard::new().expect("Failed to access clipboard");
         let mut last_content = String::new();
         let mut last_image_hash: u64 = 0;
+        let mut insert_count: u32 = 0;
 
         loop {
             thread::sleep(Duration::from_millis(500));
@@ -76,7 +77,8 @@ pub fn start_monitor(db: Arc<Database>) {
                             pinned: false,
                         };
                         db.insert(&item);
-                        db.cleanup(500);
+                        insert_count += 1;
+                        if insert_count % 50 == 0 { db.cleanup(500); }
                     }
                 }
                 continue;
@@ -98,7 +100,8 @@ pub fn start_monitor(db: Arc<Database>) {
                     pinned: false,
                 };
                 db.insert(&item);
-                db.cleanup(500);
+                insert_count += 1;
+                if insert_count % 50 == 0 { db.cleanup(500); }
             }
         }
     });
