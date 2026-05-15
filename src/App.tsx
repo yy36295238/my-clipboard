@@ -281,6 +281,8 @@ function App() {
             </div>
             {editingItem.type === "image" ? (
               <img className="view-image" src={convertFileSrc(editingItem.content)} alt="clipboard image" />
+            ) : (editingItem.type === "code" || editingItem.type === "json") ? (
+              <pre className="view-content"><code dangerouslySetInnerHTML={{ __html: hljs.highlightAuto(editingItem.content).value }} /></pre>
             ) : (
               <pre className="view-content">{editingItem.content}</pre>
             )}
