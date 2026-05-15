@@ -260,13 +260,6 @@ function App() {
         )}
       </div>
 
-      {/* Preview panel for selected item */}
-      {items[selectedIdx] && items[selectedIdx].content.length > 150 && !editing && (
-        <div className="preview-panel">
-          <pre className="preview-content">{items[selectedIdx].content.slice(0, 800)}</pre>
-        </div>
-      )}
-
       {/* Footer */}
       <div className="footer">
         <span><kbd>↑↓</kbd> 导航</span>

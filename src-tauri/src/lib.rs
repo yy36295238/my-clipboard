@@ -1,3 +1,5 @@
+#![allow(unexpected_cfgs)]
+
 mod commands;
 mod db;
 mod monitor;
@@ -62,16 +64,19 @@ pub fn run() {
 
             // Create system tray
             let _tray = TrayIconBuilder::new()
-                .icon(tauri::image::Image::from_bytes(include_bytes!("../icons/tray-icon.png")).unwrap())
+                .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("AI 剪贴板")
                 .on_tray_icon_event(|tray, event| {
-                    if let tauri::tray::TrayIconEvent::Click { .. } = event {
-                        let app = tray.app_handle();
-                        if let Some(window) = app.get_webview_window("main") {
-                            if window.is_visible().unwrap_or(false) {
-                                window.hide().ok();
-                            } else {
-                                show_in_current_space(&window);
+                    use tauri::tray::{TrayIconEvent, MouseButton, MouseButtonState};
+                    if let TrayIconEvent::Click { button, button_state, .. } = event {
+                        if button == MouseButton::Left && button_state == MouseButtonState::Up {
+                            let app = tray.app_handle();
+                            if let Some(window) = app.get_webview_window("main") {
+                                if window.is_visible().unwrap_or(false) {
+                                    window.hide().ok();
+                                } else {
+                                    show_in_current_space(&window);
+                                }
                             }
                         }
                     }
@@ -107,19 +112,20 @@ fn set_panel_level(window: &tauri::WebviewWindow) {
 
         let ns_window: *mut Object = window.ns_window().unwrap() as *mut Object;
         unsafe {
-            // CGWindowLevelForKey(kCGScreenSaverWindowLevelKey) = 1000
             let _: () = msg_send![ns_window, setLevel: 1000i64];
-            // NSWindowCollectionBehaviorCanJoinAllSpaces = 1 << 0
-            // NSWindowCollectionBehaviorStationary = 1 << 4
-            // NSWindowCollectionBehaviorFullScreenAuxiliary = 1 << 8
             let behavior: u64 = (1 << 0) | (1 << 4) | (1 << 8);
             let _: () = msg_send![ns_window, setCollectionBehavior: behavior];
+
+            // Make window fully transparent
+            let _: () = msg_send![ns_window, setOpaque: false];
+            let ns_color_class = objc::runtime::Class::get("NSColor").unwrap();
+            let clear_color: *mut Object = msg_send![ns_color_class, clearColor];
+            let _: () = msg_send![ns_window, setBackgroundColor: clear_color];
         }
     }
     #[cfg(not(target_os = "macos"))]
     let _ = window;
 }
-
 /// Show window in the current Space (including fullscreen) and focus it
 fn show_in_current_space(window: &tauri::WebviewWindow) {
     window.show().ok();
