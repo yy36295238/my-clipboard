@@ -35,7 +35,6 @@ function App() {
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [editing, setEditing] = useState(false);
   const [editingItem, setEditingItem] = useState<ClipboardItem | null>(null);
-  const [editContent, setEditContent] = useState("");
   const [viewCopied, setViewCopied] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -135,16 +134,8 @@ function App() {
     await invoke("delete_item", { id: item.id });
   };
 
-  const handleEdit = async (id: string, content: string) => {
-    await invoke("update_item", { id, content });
-    setEditing(false);
-    setEditingItem(null);
-    loadItems();
-  };
-
   const startEdit = (item: ClipboardItem) => {
     setEditingItem(item);
-    setEditContent(item.content);
     setEditing(true);
   };
 
@@ -152,9 +143,6 @@ function App() {
     setEditing(false);
     setEditingItem(null);
   };
-
-  // Fix #14: Use content length + newlines to determine modal
-  const needsModal = (content: string) => content.includes("\n") || content.length > 80;
 
   const timeAgo = (ts: number) => {
     const diff = Math.floor(Date.now() / 1000 - ts);
