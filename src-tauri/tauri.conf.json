@@ -15,8 +15,8 @@
       {
         "label": "main",
         "title": "AI Clipboard",
-        "width": 680,
-        "height": 500,
+        "width": 750,
+        "height": 580,
         "resizable": true,
         "decorations": false,
         "transparent": true,
