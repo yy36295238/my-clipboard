@@ -76,6 +76,7 @@ pub fn start_monitor(db: Arc<Database>) {
                             pinned: false,
                         };
                         db.insert(&item);
+                        db.cleanup(500);
                     }
                 }
                 continue;
@@ -97,6 +98,7 @@ pub fn start_monitor(db: Arc<Database>) {
                     pinned: false,
                 };
                 db.insert(&item);
+                db.cleanup(500);
             }
         }
     });

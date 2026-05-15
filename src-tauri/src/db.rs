@@ -149,6 +149,20 @@ impl Database {
         conn.execute("DELETE FROM clipboard_items WHERE id = ?1", params![id]).ok();
     }
 
+    /// Remove old items beyond the limit, keeping favorites and pinned
+    pub fn cleanup(&self, max_items: usize) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM clipboard_items WHERE id IN (
+                SELECT id FROM clipboard_items
+                WHERE favorite = 0 AND pinned = 0
+                ORDER BY created_at DESC
+                LIMIT -1 OFFSET ?1
+            )",
+            params![max_items as i64],
+        ).ok();
+    }
+
     pub fn update_content(&self, id: &str, content: &str) {
         let conn = self.conn.lock().unwrap();
         conn.execute(
