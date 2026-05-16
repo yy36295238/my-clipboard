@@ -53,8 +53,10 @@ pub fn run() {
     builder
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(move |app, _shortcut_event, event| {
+                .with_handler(move |app, shortcut_event, event| {
                     if event.state() != ShortcutState::Pressed { return; }
+                    // Only respond to Cmd+Shift+V
+                    if shortcut_event.key != Code::KeyV { return; }
                     if visible_for_shortcut.load(Ordering::SeqCst) {
                         hide_panel(app);
                         visible_for_shortcut.store(false, Ordering::SeqCst);
