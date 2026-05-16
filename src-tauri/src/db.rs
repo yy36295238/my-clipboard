@@ -69,24 +69,36 @@ impl Database {
         if query.is_empty() {
             return self.recent(&conn, limit);
         }
-        let fts_query = format!("{}*", query);
-        let mut stmt = conn.prepare(
-            "SELECT c.id, c.content, c.content_type, c.created_at, c.favorite, c.pinned
-             FROM clipboard_fts f
-             JOIN clipboard_items c ON c.rowid = f.rowid
-             WHERE clipboard_fts MATCH ?1
-             ORDER BY c.created_at DESC LIMIT ?2"
-        ).unwrap();
-        stmt.query_map(params![fts_query, limit as i64], |row| {
-            Ok(ClipboardItem {
-                id: row.get(0)?,
-                content: row.get(1)?,
-                content_type: row.get(2)?,
-                created_at: row.get(3)?,
-                favorite: row.get::<_, i32>(4)? != 0,
-                pinned: row.get::<_, i32>(5)? != 0,
-            })
-        }).unwrap().filter_map(|r| r.ok()).collect()
+        let terms: Vec<String> = query.split_whitespace()
+            .map(|t| format!("%{}%", t))
+            .collect();
+        let where_clause = terms.iter().enumerate()
+            .map(|(i, _)| format!("content LIKE ?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let sql = format!(
+            "SELECT id, content, content_type, created_at, favorite, pinned
+             FROM clipboard_items WHERE {} ORDER BY created_at DESC LIMIT ?{}",
+            where_clause, terms.len() + 1
+        );
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let limit_i64 = limit as i64;
+        let mut rows = stmt.query(rusqlite::params_from_iter(
+            terms.iter().map(|s| s as &dyn rusqlite::ToSql)
+                .chain(std::iter::once(&limit_i64 as &dyn rusqlite::ToSql))
+        )).unwrap();
+        let mut result = Vec::new();
+        while let Ok(Some(row)) = rows.next() {
+            result.push(ClipboardItem {
+                id: row.get(0).unwrap(),
+                content: row.get(1).unwrap(),
+                content_type: row.get(2).unwrap(),
+                created_at: row.get(3).unwrap(),
+                favorite: row.get::<_, i32>(4).unwrap() != 0,
+                pinned: row.get::<_, i32>(5).unwrap() != 0,
+            });
+        }
+        result
     }
 
     fn recent(&self, conn: &Connection, limit: usize) -> Vec<ClipboardItem> {
