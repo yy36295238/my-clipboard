@@ -53,24 +53,14 @@ pub fn run() {
     builder
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(move |app, shortcut_event, event| {
+                .with_handler(move |app, _shortcut_event, event| {
                     if event.state() != ShortcutState::Pressed { return; }
-                    let is_esc = shortcut_event.mods.is_empty() && shortcut_event.key == Code::Escape;
-                    let is_toggle = !shortcut_event.mods.is_empty();
-                    eprintln!("[shortcut] esc={} toggle={} visible={}", is_esc, is_toggle, visible_for_shortcut.load(Ordering::SeqCst));
-                    if is_esc {
-                        if visible_for_shortcut.load(Ordering::SeqCst) {
-                            hide_panel(app);
-                            visible_for_shortcut.store(false, Ordering::SeqCst);
-                        }
-                    } else if is_toggle {
-                        if visible_for_shortcut.load(Ordering::SeqCst) {
-                            hide_panel(app);
-                            visible_for_shortcut.store(false, Ordering::SeqCst);
-                        } else {
-                            show_panel(app);
-                            visible_for_shortcut.store(true, Ordering::SeqCst);
-                        }
+                    if visible_for_shortcut.load(Ordering::SeqCst) {
+                        hide_panel(app);
+                        visible_for_shortcut.store(false, Ordering::SeqCst);
+                    } else {
+                        show_panel(app);
+                        visible_for_shortcut.store(true, Ordering::SeqCst);
                     }
                 })
                 .build(),
@@ -104,10 +94,6 @@ pub fn run() {
 
             // Register global shortcut (Cmd+Shift+V)
             app.global_shortcut().register(shortcut)?;
-
-            // Register ESC (handled in with_handler, only acts when visible)
-            let esc_shortcut = Shortcut::new(None, Code::Escape);
-            app.global_shortcut().register(esc_shortcut)?;
 
             // Create system tray
             use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
