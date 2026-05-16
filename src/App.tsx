@@ -36,6 +36,10 @@ function App() {
   const [editing, setEditing] = useState(false);
   const [editingItem, setEditingItem] = useState<ClipboardItem | null>(null);
   const [viewCopied, setViewCopied] = useState(false);
+  const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const offsetRef = useRef(0);
+  const hasMoreRef = useRef(true);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -45,40 +49,88 @@ function App() {
     return () => clearTimeout(timer);
   }, [query]);
 
-  const loadItems = useCallback(async () => {
+  // Reset pagination when query or tab changes
+  useEffect(() => {
+    setOffset(0);
+    offsetRef.current = 0;
+    setHasMore(true);
+    hasMoreRef.current = true;
+    setItems([]);
+  }, [debouncedQuery, tab]);
+
+  const loadItems = useCallback(async (currentOffset = 0) => {
     let result: ClipboardItem[];
     if (tab === "favorites") {
       result = await invoke("get_favorites");
+      setItems(result);
+      setHasMore(false);
+      return;
     } else if (debouncedQuery) {
-      result = await invoke("search_items", { query: debouncedQuery });
+      result = await invoke("search_items", { query: debouncedQuery, offset: currentOffset });
     } else {
-      result = await invoke("get_history");
+      result = await invoke("get_history", { offset: currentOffset });
     }
-    // Fix #6: Don't reset selectedIdx if items haven't changed
-    setItems(prev => {
-      const prevIds = prev.map(i => i.id).join(",");
-      const newIds = result.map(i => i.id).join(",");
-      if (prevIds === newIds) {
-        // Update content in place without resetting selection
-        return result;
-      }
-      // Only reset if list actually changed
-      setSelectedIdx(idx => Math.min(idx, Math.max(0, result.length - 1)));
-      return result;
-    });
+    if (currentOffset === 0) {
+      setItems(result);
+    } else {
+      setItems(prev => {
+        const existingIds = new Set(prev.map(i => i.id));
+        const newItems = result.filter(i => !existingIds.has(i.id));
+        return [...prev, ...newItems];
+      });
+    }
+    setHasMore(result.length === 30);
+    hasMoreRef.current = result.length === 30;
+    setSelectedIdx(idx => Math.min(idx, Math.max(0, (currentOffset === 0 ? result.length : items.length + result.length) - 1)));
   }, [debouncedQuery, tab]);
 
-  useEffect(() => { loadItems(); }, [loadItems]);
+  useEffect(() => { loadItems(0); }, [loadItems]);
   useEffect(() => {
     let interval: ReturnType<typeof setInterval> | null = null;
-    const start = () => { if (!interval) interval = setInterval(loadItems, 2000); };
+    const refreshLoaded = async () => {
+      // Refresh all currently loaded items without truncating
+      const currentCount = offsetRef.current + 30;
+      if (tab === "favorites") { loadItems(0); return; }
+      const cmd = debouncedQuery ? "search_items" : "get_history";
+      const args = debouncedQuery ? { query: debouncedQuery, offset: 0 } : { offset: 0 };
+      // Fetch enough to cover what's loaded
+      const pages = Math.ceil(currentCount / 30);
+      const results: ClipboardItem[] = [];
+      for (let i = 0; i < pages; i++) {
+        const pageArgs = debouncedQuery
+          ? { query: debouncedQuery, offset: i * 30 }
+          : { offset: i * 30 };
+        const page: ClipboardItem[] = await invoke(cmd, pageArgs);
+        results.push(...page);
+        if (page.length < 30) break;
+      }
+      setItems(results);
+    };
+    const start = () => { if (!interval) interval = setInterval(refreshLoaded, 2000); };
     const stop = () => { if (interval) { clearInterval(interval); interval = null; } };
     const onVisibility = () => { document.hidden ? stop() : start(); };
     if (!document.hidden) start();
     document.addEventListener("visibilitychange", onVisibility);
     return () => { stop(); document.removeEventListener("visibilitychange", onVisibility); };
-  }, [loadItems]);
+  }, [loadItems, tab, debouncedQuery]);
   useEffect(() => { inputRef.current?.focus(); }, []);
+
+  // Scroll to bottom → load more
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      if (!hasMoreRef.current) return;
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
+        const nextOffset = offsetRef.current + 30;
+        offsetRef.current = nextOffset;
+        setOffset(nextOffset);
+        loadItems(nextOffset);
+      }
+    };
+    el.addEventListener("scroll", onScroll);
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [loadItems]);
 
   // Fix #4 & #5: Only handle global keys when not editing
   useEffect(() => {
@@ -162,7 +214,7 @@ function App() {
   return (
     <div className="panel">
       {/* Search */}
-      <div className="search-container">
+      <div className="search-container" onMouseDown={e => { if ((e.target as HTMLElement).tagName !== 'INPUT') invoke('start_drag'); }}>
         <svg className="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
         </svg>
@@ -206,6 +258,7 @@ function App() {
                 <ItemRow
                   key={item.id}
                   item={item}
+                  index={items.indexOf(item) + 1}
                   selected={globalIdx === selectedIdx}
                   timeAgo={timeAgo(item.createdAt)}
                   onPaste={handlePaste}
@@ -229,6 +282,7 @@ function App() {
             <ItemRow
               key={item.id}
               item={item}
+              index={items.indexOf(item) + 1}
               selected={globalIdx === selectedIdx}
               timeAgo={timeAgo(item.createdAt)}
               onPaste={handlePaste}
@@ -250,6 +304,12 @@ function App() {
             <p>暂无剪贴板记录</p>
             <span>复制内容后将自动显示在这里</span>
           </div>
+        )}
+        {hasMore && items.length > 0 && tab !== "favorites" && (
+          <div className="load-more-hint">滚动加载更多</div>
+        )}
+        {!hasMore && items.length > 0 && tab !== "favorites" && (
+          <div className="load-more-hint">— 已加载全部 {items.length} 条 —</div>
         )}
       </div>
 
@@ -293,8 +353,9 @@ function App() {
   );
 }
 
-function ItemRow({ item, selected, timeAgo, onPaste, onCopy, onEdit, onSelect, onToggleFavorite, onTogglePin, onDelete }: {
+function ItemRow({ item, index, selected, timeAgo, onPaste, onCopy, onEdit, onSelect, onToggleFavorite, onTogglePin, onDelete }: {
   item: ClipboardItem;
+  index: number;
   selected: boolean;
   timeAgo: string;
   onPaste: (content: string, contentType: string) => void;
@@ -330,6 +391,7 @@ function ItemRow({ item, selected, timeAgo, onPaste, onCopy, onEdit, onSelect, o
       onClick={() => onSelect()}
       onDoubleClick={() => onPaste(item.content, item.type)}
     >
+      <span className="item-index">{index}</span>
       <div className="item-left">
         <span className={`badge badge-${item.type}`}>{item.type}</span>
       </div>

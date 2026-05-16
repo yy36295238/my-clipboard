@@ -64,10 +64,10 @@ impl Database {
         ).unwrap_or(0) > 0
     }
 
-    pub fn search(&self, query: &str, limit: usize) -> Vec<ClipboardItem> {
+    pub fn search(&self, query: &str, limit: usize, offset: usize) -> Vec<ClipboardItem> {
         let conn = self.conn.lock().unwrap();
         if query.is_empty() {
-            return self.recent(&conn, limit);
+            return self.recent(&conn, limit, offset);
         }
         let terms: Vec<String> = query.split_whitespace()
             .map(|t| format!("%{}%", t))
@@ -78,14 +78,16 @@ impl Database {
             .join(" AND ");
         let sql = format!(
             "SELECT id, content, content_type, created_at, favorite, pinned
-             FROM clipboard_items WHERE {} ORDER BY created_at DESC LIMIT ?{}",
-            where_clause, terms.len() + 1
+             FROM clipboard_items WHERE {} ORDER BY created_at DESC LIMIT ?{} OFFSET ?{}",
+            where_clause, terms.len() + 1, terms.len() + 2
         );
         let mut stmt = conn.prepare(&sql).unwrap();
         let limit_i64 = limit as i64;
+        let offset_i64 = offset as i64;
         let mut rows = stmt.query(rusqlite::params_from_iter(
             terms.iter().map(|s| s as &dyn rusqlite::ToSql)
                 .chain(std::iter::once(&limit_i64 as &dyn rusqlite::ToSql))
+                .chain(std::iter::once(&offset_i64 as &dyn rusqlite::ToSql))
         )).unwrap();
         let mut result = Vec::new();
         while let Ok(Some(row)) = rows.next() {
@@ -101,12 +103,12 @@ impl Database {
         result
     }
 
-    fn recent(&self, conn: &Connection, limit: usize) -> Vec<ClipboardItem> {
+    fn recent(&self, conn: &Connection, limit: usize, offset: usize) -> Vec<ClipboardItem> {
         let mut stmt = conn.prepare(
             "SELECT id, content, content_type, created_at, favorite, pinned
-             FROM clipboard_items ORDER BY pinned DESC, created_at DESC LIMIT ?1"
+             FROM clipboard_items ORDER BY pinned DESC, created_at DESC LIMIT ?1 OFFSET ?2"
         ).unwrap();
-        stmt.query_map(params![limit as i64], |row| {
+        stmt.query_map(params![limit as i64, offset as i64], |row| {
             Ok(ClipboardItem {
                 id: row.get(0)?,
                 content: row.get(1)?,

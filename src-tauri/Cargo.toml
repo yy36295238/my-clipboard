@@ -28,5 +28,7 @@ chrono = "0.4"
 arboard = "3"
 dirs = "5"
 objc = "0.2"
+dispatch = "0.2"
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }
 core-graphics = "0.24"
 png = "0.17"

@@ -7,16 +7,17 @@ pub static SKIP_NEXT_CLIPBOARD: AtomicBool = AtomicBool::new(false);
 
 pub struct AppState {
     pub db: Arc<Database>,
+    pub visible: Arc<AtomicBool>,
 }
 
 #[tauri::command]
-pub fn search_items(query: String, state: State<AppState>) -> Vec<ClipboardItem> {
-    state.db.search(&query, 50)
+pub fn search_items(query: String, offset: usize, state: State<AppState>) -> Vec<ClipboardItem> {
+    state.db.search(&query, 30, offset)
 }
 
 #[tauri::command]
-pub fn get_history(state: State<AppState>) -> Vec<ClipboardItem> {
-    state.db.search("", 50)
+pub fn get_history(offset: usize, state: State<AppState>) -> Vec<ClipboardItem> {
+    state.db.search("", 30, offset)
 }
 
 #[tauri::command]
@@ -94,8 +95,23 @@ fn set_image_clipboard(clipboard: &mut arboard::Clipboard, path: &str) {
 }
 
 #[tauri::command]
-pub fn hide_window(window: tauri::WebviewWindow) {
-    window.hide().ok();
+pub fn hide_window(app: tauri::AppHandle, state: State<AppState>) {
+    state.visible.store(false, Ordering::SeqCst);
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_nspanel::ManagerExt;
+        if let Ok(panel) = app.get_webview_panel("main") {
+            panel.hide();
+        }
+        return;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        use tauri::Manager;
+        if let Some(window) = app.get_webview_window("main") {
+            window.hide().ok();
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -118,3 +134,23 @@ fn simulate_paste() {
 
 #[cfg(not(target_os = "macos"))]
 fn simulate_paste() {}
+
+#[tauri::command]
+pub fn start_drag(app: tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_nspanel::ManagerExt;
+        if let Ok(panel) = app.get_webview_panel("main") {
+            unsafe {
+                use tauri_nspanel::objc2::msg_send;
+                use tauri_nspanel::objc2::runtime::AnyObject;
+                let ns_panel = panel.as_panel();
+                let ns_app: *mut AnyObject = msg_send![tauri_nspanel::objc2::class!(NSApplication), sharedApplication];
+                let event: *mut AnyObject = msg_send![ns_app, currentEvent];
+                if !event.is_null() {
+                    let _: () = msg_send![ns_panel, performWindowDragWithEvent: event];
+                }
+            }
+        }
+    }
+}
