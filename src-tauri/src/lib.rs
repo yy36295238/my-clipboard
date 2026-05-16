@@ -110,9 +110,19 @@ pub fn run() {
             app.global_shortcut().register(esc_shortcut)?;
 
             // Create system tray
+            use tauri::menu::{MenuBuilder, MenuItemBuilder};
+            let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;
+            let menu = MenuBuilder::new(app).item(&quit).build()?;
+
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("AI 剪贴板")
+                .menu(&menu)
+                .on_menu_event(|app, event| {
+                    if event.id().as_ref() == "quit" {
+                        app.exit(0);
+                    }
+                })
                 .on_tray_icon_event(move |tray, event| {
                     use tauri::tray::{TrayIconEvent, MouseButton, MouseButtonState};
                     if let TrayIconEvent::Click { button, button_state, .. } = event {
