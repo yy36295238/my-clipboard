@@ -36,7 +36,6 @@ function App() {
   const [editing, setEditing] = useState(false);
   const [editingItem, setEditingItem] = useState<ClipboardItem | null>(null);
   const [viewCopied, setViewCopied] = useState(false);
-  const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const offsetRef = useRef(0);
   const hasMoreRef = useRef(true);
@@ -51,7 +50,6 @@ function App() {
 
   // Reset pagination when query or tab changes
   useEffect(() => {
-    setOffset(0);
     offsetRef.current = 0;
     setHasMore(true);
     hasMoreRef.current = true;
@@ -92,7 +90,6 @@ function App() {
       const currentCount = offsetRef.current + 30;
       if (tab === "favorites") { loadItems(0); return; }
       const cmd = debouncedQuery ? "search_items" : "get_history";
-      const args = debouncedQuery ? { query: debouncedQuery, offset: 0 } : { offset: 0 };
       // Fetch enough to cover what's loaded
       const pages = Math.ceil(currentCount / 30);
       const results: ClipboardItem[] = [];
@@ -124,7 +121,6 @@ function App() {
       if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
         const nextOffset = offsetRef.current + 30;
         offsetRef.current = nextOffset;
-        setOffset(nextOffset);
         loadItems(nextOffset);
       }
     };
