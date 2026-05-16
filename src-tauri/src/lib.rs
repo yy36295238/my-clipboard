@@ -110,17 +110,33 @@ pub fn run() {
             app.global_shortcut().register(esc_shortcut)?;
 
             // Create system tray
-            use tauri::menu::{MenuBuilder, MenuItemBuilder};
-            let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;
-            let menu = MenuBuilder::new(app).item(&quit).build()?;
+            use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
+            let show = MenuItemBuilder::with_id("show", "显示剪贴板  ⌘⇧V").build(app)?;
+            let sep1 = PredefinedMenuItem::separator(app)?;
+            let about = MenuItemBuilder::with_id("about", "关于 AI Clipboard").build(app)?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
+            let quit = MenuItemBuilder::with_id("quit", "退出").accelerator("CmdOrCtrl+Q").build(app)?;
+            let menu = MenuBuilder::new(app)
+                .item(&show)
+                .item(&sep1)
+                .item(&about)
+                .item(&sep2)
+                .item(&quit)
+                .build()?;
 
+            let visible_for_menu = visible.clone();
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("AI 剪贴板")
                 .menu(&menu)
-                .on_menu_event(|app, event| {
-                    if event.id().as_ref() == "quit" {
-                        app.exit(0);
+                .on_menu_event(move |app, event| {
+                    match event.id().as_ref() {
+                        "quit" => app.exit(0),
+                        "show" => {
+                            show_panel(app);
+                            visible_for_menu.store(true, Ordering::SeqCst);
+                        }
+                        _ => {}
                     }
                 })
                 .on_tray_icon_event(move |tray, event| {
