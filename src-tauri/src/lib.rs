@@ -41,21 +41,12 @@ pub fn run() {
         )
         .manage(AppState { db })
         .setup(move |app| {
+            // Hide dock icon, show only in menu bar
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             // Register global shortcut
             app.global_shortcut().register(shortcut)?;
-
-            // Set app as accessory (menu bar only, no dock icon)
-            #[cfg(target_os = "macos")]
-            {
-                use objc::runtime::{Class, Object};
-                use objc::msg_send;
-                use objc::sel;
-                use objc::sel_impl;
-                unsafe {
-                    let ns_app: *mut Object = msg_send![Class::get("NSApplication").unwrap(), sharedApplication];
-                    let _: () = msg_send![ns_app, setActivationPolicy: 1i64]; // NSApplicationActivationPolicyAccessory = 1
-                }
-            }
 
             // Pre-configure window for fullscreen overlay
             if let Some(window) = app.get_webview_window("main") {
