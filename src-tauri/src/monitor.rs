@@ -13,24 +13,147 @@ use crate::db::{ClipboardItem, Database};
 
 fn detect_type(content: &str) -> &'static str {
     let trimmed = content.trim();
+
+    // JSON: must parse as valid JSON
     if trimmed.starts_with('{') || trimmed.starts_with('[') {
         if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
             return "json";
         }
     }
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+
+    // URL: single-line URL (no newlines)
+    if (trimmed.starts_with("http://") || trimmed.starts_with("https://")) && !trimmed.contains('\n') {
         return "url";
     }
-    if trimmed.starts_with('#') || trimmed.contains("\n## ") || trimmed.contains("\n- ") {
-        return "markdown";
-    }
-    if trimmed.contains("function ") || trimmed.contains("fn ") || trimmed.contains("def ")
-        || trimmed.contains("class ") || trimmed.contains("import ")
-        || trimmed.contains("SELECT ") || trimmed.contains("const ") || trimmed.contains("let ")
-    {
+
+    // Score-based code detection
+    let code_score = compute_code_score(trimmed);
+    if code_score >= 2 {
         return "code";
     }
+
+    // Markdown
+    if is_markdown(trimmed) {
+        return "markdown";
+    }
+
     "text"
+}
+
+fn compute_code_score(content: &str) -> u8 {
+    let mut score: u8 = 0;
+    let has_newline = content.contains('\n');
+
+    // Strong indicators: almost always code (2 points each)
+    let strong_keywords: &[&str] = &[
+        "fn ", "pub fn ", "async fn ",
+        "def ", "async def ",
+        "func ",
+        "impl ", "trait ", "pub struct ",
+        "#include", "#define", "#ifdef", "#ifndef",
+        "package main", "package ",
+        "module ", "module.exports",
+        "-> ", "=> ",  // return type / arrow syntax (Rust, Haskell, JS)
+        "::",  // namespace separator (Rust, C++)
+    ];
+    for kw in strong_keywords {
+        if content.contains(kw) {
+            score += 2;
+            if score >= 4 { return score; }
+        }
+    }
+
+    // Medium indicators: likely code but need reinforcement (1 point each)
+    let medium_keywords: &[&str] = &[
+        "function ", "function*",
+        "const ", "let ", "var ",
+        "class ", "interface ", "enum ",
+        "import ", "from 'import' ", "export ",
+        "return ", "return\n",
+        "SELECT ", "INSERT ", "UPDATE ", "DELETE ", "CREATE TABLE", "ALTER TABLE",
+        "if (", "if(", "else if", "else {",
+        "for (", "for(", "while (", "while(",
+        "switch (", "case ",
+        "try {", "catch (", "finally {",
+        ".then(", ".catch(", ".map(", ".filter(", ".reduce(",
+        "console.log", "print(", "println!",
+        "sudo ", "chmod ", "mkdir ", "grep ", "awk ", "sed ",
+        "docker ", "kubectl ",
+        "git clone", "git push", "git pull",
+    ];
+    for kw in medium_keywords {
+        if content.contains(kw) {
+            score += 1;
+            if score >= 4 { return score; }
+        }
+    }
+
+    // Structural patterns: code-like syntax (1 point each, require newline context)
+    if has_newline {
+        // Lines ending with ; or { or } in multi-line content
+        let lines: Vec<&str> = content.lines().take(20).collect();
+        let mut semi_count = 0;
+        let mut brace_count = 0;
+        for line in lines.iter() {
+            let l = line.trim_end();
+            if l.ends_with(';') { semi_count += 1; }
+            if l.ends_with('{') || l.ends_with('}') { brace_count += 1; }
+        }
+        if semi_count >= 2 { score += 1; }
+        if brace_count >= 2 { score += 1; }
+
+        // Shebang line
+        if content.starts_with("#!") {
+            score += 2;
+        }
+
+        // HTML/XML tags
+        if content.contains("</") && content.contains(">") {
+            score += 1;
+        }
+
+        // CSS-like property patterns
+        if content.contains(": ") && content.contains(";") && content.contains("{") {
+            // Check for CSS property patterns like "color: red;"
+            let css_properties = ["color", "background", "margin", "padding", "font-size", "display", "width", "height", "border"];
+            let mut css_hits = 0;
+            for prop in css_properties.iter() {
+                if content.contains(prop) { css_hits += 1; }
+            }
+            if css_hits >= 2 { score += 1; }
+        }
+
+        // Indentation patterns: consistent leading spaces/tabs suggest code
+        let indented = lines.iter().filter(|l| l.starts_with("    ") || l.starts_with('\t')).count();
+        if indented >= 3 {
+            score += 1;
+        }
+    }
+
+    score
+}
+
+fn is_markdown(content: &str) -> bool {
+    // Check for markdown heading patterns
+    if content.starts_with("# ") || content.starts_with("## ") || content.starts_with("### ") {
+        return true;
+    }
+    if content.contains("\n# ") || content.contains("\n## ") || content.contains("\n### ") {
+        return true;
+    }
+    // Bullet lists, numbered lists, or blockquotes
+    if content.contains("\n- ") || content.contains("\n* ") || content.contains("\n> ") || content.contains("\n1. ") {
+        return true;
+    }
+    // Links or bold/italic syntax
+    if content.contains("](") && content.contains('[') {
+        return true;
+    }
+    // Code blocks
+    if content.contains("```") {
+        return true;
+    }
+    false
 }
 
 pub fn start_monitor(db: Arc<Database>) {

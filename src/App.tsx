@@ -3,18 +3,38 @@ import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import hljs from "highlight.js/lib/core";
 import javascript from "highlight.js/lib/languages/javascript";
+import typescript from "highlight.js/lib/languages/typescript";
 import python from "highlight.js/lib/languages/python";
 import java from "highlight.js/lib/languages/java";
 import json from "highlight.js/lib/languages/json";
 import sql from "highlight.js/lib/languages/sql";
+import css from "highlight.js/lib/languages/css";
+import xml from "highlight.js/lib/languages/xml";
+import bash from "highlight.js/lib/languages/bash";
+import go from "highlight.js/lib/languages/go";
+import rust from "highlight.js/lib/languages/rust";
+import c from "highlight.js/lib/languages/c";
+import cpp from "highlight.js/lib/languages/cpp";
+import yaml from "highlight.js/lib/languages/yaml";
+import markdown from "highlight.js/lib/languages/markdown";
 import "highlight.js/styles/github-dark.css";
 import "./App.css";
 
 hljs.registerLanguage("javascript", javascript);
+hljs.registerLanguage("typescript", typescript);
 hljs.registerLanguage("python", python);
 hljs.registerLanguage("java", java);
 hljs.registerLanguage("json", json);
 hljs.registerLanguage("sql", sql);
+hljs.registerLanguage("css", css);
+hljs.registerLanguage("xml", xml);
+hljs.registerLanguage("bash", bash);
+hljs.registerLanguage("go", go);
+hljs.registerLanguage("rust", rust);
+hljs.registerLanguage("c", c);
+hljs.registerLanguage("cpp", cpp);
+hljs.registerLanguage("yaml", yaml);
+hljs.registerLanguage("markdown", markdown);
 
 interface ClipboardItem {
   id: string;
