@@ -2,6 +2,7 @@ use tauri::State;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::db::{ClipboardItem, Database};
+use crate::monitor::detect_type;
 
 pub static SKIP_NEXT_CLIPBOARD: AtomicBool = AtomicBool::new(false);
 
@@ -23,6 +24,11 @@ pub fn get_history(offset: usize, state: State<AppState>) -> Vec<ClipboardItem> 
 #[tauri::command]
 pub fn get_favorites(state: State<AppState>) -> Vec<ClipboardItem> {
     state.db.get_favorites(50)
+}
+
+#[tauri::command]
+pub fn get_images(offset: usize, state: State<AppState>) -> Vec<ClipboardItem> {
+    state.db.get_images(30, offset)
 }
 
 #[tauri::command]
@@ -150,6 +156,48 @@ pub fn start_drag(app: tauri::AppHandle) {
                 if !event.is_null() {
                     let _: () = msg_send![ns_panel, performWindowDragWithEvent: event];
                 }
+            }
+        }
+    }
+}
+
+/// Immediately check clipboard and save new content, called when panel is shown
+#[tauri::command]
+pub fn poll_clipboard(state: State<AppState>) {
+    if SKIP_NEXT_CLIPBOARD.load(Ordering::SeqCst) {
+        return;
+    }
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        if let Ok(text) = clipboard.get_text() {
+            if !text.is_empty() {
+                if state.db.has_content(&text) {
+                    state.db.touch(&text);
+                } else {
+                    let item = ClipboardItem {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        content: text.clone(),
+                        content_type: detect_type(&text).to_string(),
+                        created_at: chrono::Utc::now().timestamp(),
+                        favorite: false,
+                        pinned: false,
+                    };
+                    state.db.insert(&item);
+                }
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub fn make_key_window(app: tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_nspanel::ManagerExt;
+        if let Ok(panel) = app.get_webview_panel("main") {
+            unsafe {
+                use tauri_nspanel::objc2::msg_send;
+                let ns_panel = panel.as_panel();
+                let _: () = msg_send![ns_panel, makeKeyWindow];
             }
         }
     }

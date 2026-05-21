@@ -64,6 +64,14 @@ impl Database {
         ).unwrap_or(0) > 0
     }
 
+    pub fn touch(&self, content: &str) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE clipboard_items SET created_at = ?2 WHERE content = ?1",
+            params![content, chrono::Utc::now().timestamp()],
+        ).ok();
+    }
+
     pub fn search(&self, query: &str, limit: usize, offset: usize) -> Vec<ClipboardItem> {
         let conn = self.conn.lock().unwrap();
         if query.is_empty() {
@@ -127,6 +135,24 @@ impl Database {
              FROM clipboard_items WHERE favorite = 1 ORDER BY created_at DESC LIMIT ?1"
         ).unwrap();
         stmt.query_map(params![limit as i64], |row| {
+            Ok(ClipboardItem {
+                id: row.get(0)?,
+                content: row.get(1)?,
+                content_type: row.get(2)?,
+                created_at: row.get(3)?,
+                favorite: row.get::<_, i32>(4)? != 0,
+                pinned: row.get::<_, i32>(5)? != 0,
+            })
+        }).unwrap().filter_map(|r| r.ok()).collect()
+    }
+
+    pub fn get_images(&self, limit: usize, offset: usize) -> Vec<ClipboardItem> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, content, content_type, created_at, favorite, pinned
+             FROM clipboard_items WHERE content_type = 'image' ORDER BY created_at DESC LIMIT ?1 OFFSET ?2"
+        ).unwrap();
+        stmt.query_map(params![limit as i64, offset as i64], |row| {
             Ok(ClipboardItem {
                 id: row.get(0)?,
                 content: row.get(1)?,

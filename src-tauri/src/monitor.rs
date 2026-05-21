@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::commands::SKIP_NEXT_CLIPBOARD;
 use crate::db::{ClipboardItem, Database};
 
-fn detect_type(content: &str) -> &'static str {
+pub fn detect_type(content: &str) -> &'static str {
     let trimmed = content.trim();
 
     // JSON: must parse as valid JSON
@@ -26,6 +26,16 @@ fn detect_type(content: &str) -> &'static str {
         return "url";
     }
 
+    // Email: single line, contains @ and domain with dot
+    if is_email(trimmed) {
+        return "email";
+    }
+
+    // Phone: Chinese mobile number pattern
+    if is_phone(trimmed) {
+        return "phone";
+    }
+
     // Score-based code detection
     let code_score = compute_code_score(trimmed);
     if code_score >= 2 {
@@ -38,6 +48,25 @@ fn detect_type(content: &str) -> &'static str {
     }
 
     "text"
+}
+
+fn is_email(content: &str) -> bool {
+    if content.contains('\n') { return false; }
+    let parts: Vec<&str> = content.split('@').collect();
+    if parts.len() != 2 { return false; }
+    let local = parts[0];
+    let domain = parts[1];
+    !local.is_empty()
+        && domain.contains('.')
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+        && domain.split('.').all(|s| !s.is_empty())
+}
+
+fn is_phone(content: &str) -> bool {
+    if content.contains('\n') { return false; }
+    let digits: String = content.chars().filter(|c| c.is_ascii_digit()).collect();
+    digits.len() == 11 && digits.starts_with('1')
 }
 
 fn compute_code_score(content: &str) -> u8 {
@@ -80,6 +109,13 @@ fn compute_code_score(content: &str) -> u8 {
         "sudo ", "chmod ", "mkdir ", "grep ", "awk ", "sed ",
         "docker ", "kubectl ",
         "git clone", "git push", "git pull",
+        // Java / C# / Kotlin access modifiers & common types
+        "private ", "protected ", "public ",
+        "@Override", "@Autowired", "@Inject",
+        "void ", "String ", "int ", "boolean ", "long ",
+        "final ", "static ", "synchronized ",
+        "extends ", "implements ", "throws ",
+        "@Getter", "@Setter", "@Data",
     ];
     for kw in medium_keywords {
         if content.contains(kw) {
@@ -212,6 +248,7 @@ pub fn start_monitor(db: Arc<Database>) {
             if !current.is_empty() && current != last_content {
                 last_content = current.clone();
                 if db.has_content(&current) {
+                    db.touch(&current);
                     continue;
                 }
                 let item = ClipboardItem {

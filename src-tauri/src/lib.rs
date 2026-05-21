@@ -8,7 +8,7 @@ use commands::AppState;
 use db::Database;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri::tray::TrayIconBuilder;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
@@ -86,7 +86,6 @@ pub fn run() {
                         .can_join_all_spaces()
                         .into(),
                 );
-                panel.set_movable_by_window_background(true);
                 unsafe {
                     use tauri_nspanel::objc2::msg_send;
                     let ns_panel = panel.as_panel();
@@ -150,6 +149,7 @@ pub fn run() {
             commands::search_items,
             commands::get_history,
             commands::get_favorites,
+            commands::get_images,
             commands::toggle_favorite,
             commands::toggle_pin,
             commands::delete_item,
@@ -158,6 +158,8 @@ pub fn run() {
             commands::paste_item,
             commands::hide_window,
             commands::start_drag,
+            commands::poll_clipboard,
+            commands::make_key_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -168,7 +170,17 @@ fn show_panel<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     #[cfg(target_os = "macos")]
     {
         if let Ok(panel) = app.get_webview_panel("main") {
-            panel.show();
+            unsafe {
+                use tauri_nspanel::objc2::msg_send;
+                use tauri_nspanel::objc2::runtime::AnyObject;
+                // Activate the app so mouse events are routed to the panel
+                let ns_app: *mut AnyObject = msg_send![tauri_nspanel::objc2::class!(NSApplication), sharedApplication];
+                let _: () = msg_send![ns_app, activateIgnoringOtherApps: true];
+                // Show panel and make it key window in one call
+                let ns_panel = panel.as_panel();
+                let _: () = msg_send![ns_panel, makeKeyAndOrderFront: std::ptr::null::<std::ffi::c_void>()];
+            }
+            let _ = app.emit("panel-shown", ());
         }
     }
     #[cfg(not(target_os = "macos"))]
