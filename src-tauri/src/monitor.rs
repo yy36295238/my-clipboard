@@ -6,6 +6,7 @@ use std::thread;
 use std::time::Duration;
 use std::path::PathBuf;
 use std::fs;
+use tauri::Emitter;
 use uuid::Uuid;
 
 use crate::commands::SKIP_NEXT_CLIPBOARD;
@@ -192,7 +193,7 @@ fn is_markdown(content: &str) -> bool {
     false
 }
 
-pub fn start_monitor(db: Arc<Database>) {
+pub fn start_monitor(db: Arc<Database>, app: tauri::AppHandle) {
     let images_dir = PathBuf::from(
         dirs::data_local_dir()
             .map(|p| p.join("ai-clipboard").join("images"))
@@ -238,6 +239,7 @@ pub fn start_monitor(db: Arc<Database>) {
                         db.insert(&item);
                         insert_count += 1;
                         if insert_count % 50 == 0 { db.cleanup(500); }
+                        let _ = app.emit("clipboard-updated", ());
                     }
                 }
                 continue;
@@ -249,6 +251,7 @@ pub fn start_monitor(db: Arc<Database>) {
                 last_content = current.clone();
                 if db.has_content(&current) {
                     db.touch(&current);
+                    let _ = app.emit("clipboard-updated", ());
                     continue;
                 }
                 let item = ClipboardItem {
@@ -262,6 +265,7 @@ pub fn start_monitor(db: Arc<Database>) {
                 db.insert(&item);
                 insert_count += 1;
                 if insert_count % 50 == 0 { db.cleanup(500); }
+                let _ = app.emit("clipboard-updated", ());
             }
         }
     });

@@ -16,9 +16,21 @@ pub fn search_items(query: String, offset: usize, state: State<AppState>) -> Vec
     state.db.search(&query, 30, offset)
 }
 
+/// 按关键词和日期范围查询剪贴板历史，日期范围由前端按本地日期换算成时间戳。
+#[tauri::command]
+pub fn search_items_filtered(query: String, offset: usize, start_at: Option<i64>, end_at: Option<i64>, state: State<AppState>) -> Vec<ClipboardItem> {
+    state.db.search_filtered(&query, 30, offset, start_at, end_at)
+}
+
 #[tauri::command]
 pub fn get_history(offset: usize, state: State<AppState>) -> Vec<ClipboardItem> {
     state.db.search("", 30, offset)
+}
+
+/// 按日期范围查询全部历史记录。
+#[tauri::command]
+pub fn get_history_filtered(offset: usize, start_at: Option<i64>, end_at: Option<i64>, state: State<AppState>) -> Vec<ClipboardItem> {
+    state.db.search_filtered("", 30, offset, start_at, end_at)
 }
 
 #[tauri::command]
@@ -26,9 +38,21 @@ pub fn get_favorites(state: State<AppState>) -> Vec<ClipboardItem> {
     state.db.get_favorites(50)
 }
 
+/// 按日期范围查询收藏记录。
+#[tauri::command]
+pub fn get_favorites_filtered(start_at: Option<i64>, end_at: Option<i64>, state: State<AppState>) -> Vec<ClipboardItem> {
+    state.db.get_favorites_filtered(50, start_at, end_at)
+}
+
 #[tauri::command]
 pub fn get_images(offset: usize, state: State<AppState>) -> Vec<ClipboardItem> {
     state.db.get_images(30, offset)
+}
+
+/// 按日期范围查询图片记录。
+#[tauri::command]
+pub fn get_images_filtered(offset: usize, start_at: Option<i64>, end_at: Option<i64>, state: State<AppState>) -> Vec<ClipboardItem> {
+    state.db.get_images_filtered(30, offset, start_at, end_at)
 }
 
 #[tauri::command]
@@ -44,6 +68,12 @@ pub fn toggle_pin(id: String, state: State<AppState>) -> bool {
 #[tauri::command]
 pub fn delete_item(id: String, state: State<AppState>) {
     state.db.delete(&id);
+}
+
+/// 删除全部剪贴板记录，前端负责二次确认后再调用。
+#[tauri::command]
+pub fn delete_all_items(state: State<AppState>) -> usize {
+    state.db.delete_all()
 }
 
 #[tauri::command]
@@ -64,9 +94,9 @@ pub fn copy_item(content: String, content_type: String) {
     }
 }
 
-/// Paste — sets clipboard, hides window, simulates Cmd+V into the previously focused app
+/// 粘贴历史记录：先写入系统剪贴板，再隐藏面板并把 Cmd+V 发送回原先应用。
 #[tauri::command]
-pub fn paste_item(content: String, content_type: String, window: tauri::WebviewWindow) {
+pub fn paste_item(content: String, content_type: String, window: tauri::WebviewWindow, state: State<AppState>) {
     SKIP_NEXT_CLIPBOARD.store(true, Ordering::SeqCst);
     if let Ok(mut clipboard) = arboard::Clipboard::new() {
         if content_type == "image" {
@@ -75,6 +105,7 @@ pub fn paste_item(content: String, content_type: String, window: tauri::WebviewW
             clipboard.set_text(content).ok();
         }
     }
+    state.visible.store(false, Ordering::SeqCst);
     window.hide().ok();
     std::thread::spawn(|| {
         std::thread::sleep(std::time::Duration::from_millis(100));

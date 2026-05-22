@@ -1,4 +1,4 @@
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, ToSql, params};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
@@ -73,42 +73,78 @@ impl Database {
     }
 
     pub fn search(&self, query: &str, limit: usize, offset: usize) -> Vec<ClipboardItem> {
+        self.search_filtered(query, limit, offset, None, None)
+    }
+
+    /// 按关键词和本地日期范围查询历史记录，时间范围使用 Unix 秒级时间戳的左闭右开区间。
+    pub fn search_filtered(&self, query: &str, limit: usize, offset: usize, start_at: Option<i64>, end_at: Option<i64>) -> Vec<ClipboardItem> {
         let conn = self.conn.lock().unwrap();
-        if query.is_empty() {
+        if query.is_empty() && start_at.is_none() && end_at.is_none() {
             return self.recent(&conn, limit, offset);
         }
-        let terms: Vec<String> = query.split_whitespace()
-            .map(|t| format!("%{}%", t))
-            .collect();
-        let where_clause = terms.iter().enumerate()
-            .map(|(i, _)| format!("content LIKE ?{}", i + 1))
-            .collect::<Vec<_>>()
-            .join(" AND ");
+        self.query_items(&conn, query, None, false, query.is_empty(), limit, offset, start_at, end_at)
+    }
+
+    fn query_items(
+        &self,
+        conn: &Connection,
+        query: &str,
+        content_type: Option<&str>,
+        favorites_only: bool,
+        pinned_first: bool,
+        limit: usize,
+        offset: usize,
+        start_at: Option<i64>,
+        end_at: Option<i64>,
+    ) -> Vec<ClipboardItem> {
+        let mut filters = Vec::new();
+        let mut values: Vec<Box<dyn ToSql>> = Vec::new();
+
+        if favorites_only {
+            filters.push("favorite = 1".to_string());
+        }
+        if let Some(content_type) = content_type {
+            filters.push("content_type = ?".to_string());
+            values.push(Box::new(content_type.to_string()));
+        }
+        for term in query.split_whitespace() {
+            filters.push("content LIKE ?".to_string());
+            values.push(Box::new(format!("%{}%", term)));
+        }
+        if let Some(start_at) = start_at {
+            filters.push("created_at >= ?".to_string());
+            values.push(Box::new(start_at));
+        }
+        if let Some(end_at) = end_at {
+            filters.push("created_at < ?".to_string());
+            values.push(Box::new(end_at));
+        }
+
+        let where_clause = if filters.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", filters.join(" AND "))
+        };
+        let order_by = if pinned_first {
+            "pinned DESC, created_at DESC"
+        } else {
+            "created_at DESC"
+        };
         let sql = format!(
             "SELECT id, content, content_type, created_at, favorite, pinned
-             FROM clipboard_items WHERE {} ORDER BY created_at DESC LIMIT ?{} OFFSET ?{}",
-            where_clause, terms.len() + 1, terms.len() + 2
+             FROM clipboard_items{} ORDER BY {} LIMIT ? OFFSET ?",
+            where_clause, order_by
         );
         let mut stmt = conn.prepare(&sql).unwrap();
         let limit_i64 = limit as i64;
         let offset_i64 = offset as i64;
-        let mut rows = stmt.query(rusqlite::params_from_iter(
-            terms.iter().map(|s| s as &dyn rusqlite::ToSql)
-                .chain(std::iter::once(&limit_i64 as &dyn rusqlite::ToSql))
-                .chain(std::iter::once(&offset_i64 as &dyn rusqlite::ToSql))
-        )).unwrap();
-        let mut result = Vec::new();
-        while let Ok(Some(row)) = rows.next() {
-            result.push(ClipboardItem {
-                id: row.get(0).unwrap(),
-                content: row.get(1).unwrap(),
-                content_type: row.get(2).unwrap(),
-                created_at: row.get(3).unwrap(),
-                favorite: row.get::<_, i32>(4).unwrap() != 0,
-                pinned: row.get::<_, i32>(5).unwrap() != 0,
-            });
-        }
-        result
+        values.push(Box::new(limit_i64));
+        values.push(Box::new(offset_i64));
+        let params = values.iter().map(|value| value.as_ref() as &dyn ToSql);
+        stmt.query_map(rusqlite::params_from_iter(params), |row| Self::row_to_item(row))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect()
     }
 
     fn recent(&self, conn: &Connection, limit: usize, offset: usize) -> Vec<ClipboardItem> {
@@ -116,52 +152,27 @@ impl Database {
             "SELECT id, content, content_type, created_at, favorite, pinned
              FROM clipboard_items ORDER BY pinned DESC, created_at DESC LIMIT ?1 OFFSET ?2"
         ).unwrap();
-        stmt.query_map(params![limit as i64, offset as i64], |row| {
-            Ok(ClipboardItem {
-                id: row.get(0)?,
-                content: row.get(1)?,
-                content_type: row.get(2)?,
-                created_at: row.get(3)?,
-                favorite: row.get::<_, i32>(4)? != 0,
-                pinned: row.get::<_, i32>(5)? != 0,
-            })
-        }).unwrap().filter_map(|r| r.ok()).collect()
+        stmt.query_map(params![limit as i64, offset as i64], |row| Self::row_to_item(row)).unwrap().filter_map(|r| r.ok()).collect()
     }
 
     pub fn get_favorites(&self, limit: usize) -> Vec<ClipboardItem> {
+        self.get_favorites_filtered(limit, None, None)
+    }
+
+    /// 查询收藏记录，可叠加日期范围过滤。
+    pub fn get_favorites_filtered(&self, limit: usize, start_at: Option<i64>, end_at: Option<i64>) -> Vec<ClipboardItem> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, content, content_type, created_at, favorite, pinned
-             FROM clipboard_items WHERE favorite = 1 ORDER BY created_at DESC LIMIT ?1"
-        ).unwrap();
-        stmt.query_map(params![limit as i64], |row| {
-            Ok(ClipboardItem {
-                id: row.get(0)?,
-                content: row.get(1)?,
-                content_type: row.get(2)?,
-                created_at: row.get(3)?,
-                favorite: row.get::<_, i32>(4)? != 0,
-                pinned: row.get::<_, i32>(5)? != 0,
-            })
-        }).unwrap().filter_map(|r| r.ok()).collect()
+        self.query_items(&conn, "", None, true, false, limit, 0, start_at, end_at)
     }
 
     pub fn get_images(&self, limit: usize, offset: usize) -> Vec<ClipboardItem> {
+        self.get_images_filtered(limit, offset, None, None)
+    }
+
+    /// 查询图片记录，可叠加日期范围过滤。
+    pub fn get_images_filtered(&self, limit: usize, offset: usize, start_at: Option<i64>, end_at: Option<i64>) -> Vec<ClipboardItem> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, content, content_type, created_at, favorite, pinned
-             FROM clipboard_items WHERE content_type = 'image' ORDER BY created_at DESC LIMIT ?1 OFFSET ?2"
-        ).unwrap();
-        stmt.query_map(params![limit as i64, offset as i64], |row| {
-            Ok(ClipboardItem {
-                id: row.get(0)?,
-                content: row.get(1)?,
-                content_type: row.get(2)?,
-                created_at: row.get(3)?,
-                favorite: row.get::<_, i32>(4)? != 0,
-                pinned: row.get::<_, i32>(5)? != 0,
-            })
-        }).unwrap().filter_map(|r| r.ok()).collect()
+        self.query_items(&conn, "", Some("image"), false, false, limit, offset, start_at, end_at)
     }
 
     pub fn toggle_favorite(&self, id: &str) -> bool {
@@ -189,6 +200,12 @@ impl Database {
         conn.execute("DELETE FROM clipboard_items WHERE id = ?1", params![id]).ok();
     }
 
+    /// 清空全部剪贴板记录，包含收藏和置顶记录。
+    pub fn delete_all(&self) -> usize {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM clipboard_items", []).unwrap_or(0)
+    }
+
     /// Remove old items beyond the limit, keeping favorites and pinned
     pub fn cleanup(&self, max_items: usize) {
         let conn = self.conn.lock().unwrap();
@@ -209,5 +226,16 @@ impl Database {
             "UPDATE clipboard_items SET content = ?2 WHERE id = ?1",
             params![id, content],
         ).ok();
+    }
+
+    fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClipboardItem> {
+        Ok(ClipboardItem {
+            id: row.get(0)?,
+            content: row.get(1)?,
+            content_type: row.get(2)?,
+            created_at: row.get(3)?,
+            favorite: row.get::<_, i32>(4)? != 0,
+            pinned: row.get::<_, i32>(5)? != 0,
+        })
     }
 }

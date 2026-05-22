@@ -34,8 +34,6 @@ pub fn run() {
     let db_path = format!("{}/clipboard.db", app_dir);
     let db = Arc::new(Database::new(&db_path));
 
-    monitor::start_monitor(db.clone());
-
     let shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyV);
     let visible = Arc::new(AtomicBool::new(false));
 
@@ -67,11 +65,13 @@ pub fn run() {
                 })
                 .build(),
         )
-        .manage(AppState { db, visible: visible.clone() })
+        .manage(AppState { db: db.clone(), visible: visible.clone() })
         .setup(move |app| {
             // Hide dock icon, show only in menu bar
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            monitor::start_monitor(db.clone(), app.handle().clone());
 
             // Convert main window into NSPanel
             #[cfg(target_os = "macos")]
@@ -90,7 +90,9 @@ pub fn run() {
                     use tauri_nspanel::objc2::msg_send;
                     let ns_panel = panel.as_panel();
                     let _: () = msg_send![ns_panel, setMovable: true];
+                    let _: () = msg_send![ns_panel, setBecomesKeyOnlyIfNeeded: false];
                 }
+                start_panel_focus_watchdog(app.handle().clone(), visible.clone());
             }
 
             // Register global shortcut (Cmd+Shift+V)
@@ -147,12 +149,17 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::search_items,
+            commands::search_items_filtered,
             commands::get_history,
+            commands::get_history_filtered,
             commands::get_favorites,
+            commands::get_favorites_filtered,
             commands::get_images,
+            commands::get_images_filtered,
             commands::toggle_favorite,
             commands::toggle_pin,
             commands::delete_item,
+            commands::delete_all_items,
             commands::update_item,
             commands::copy_item,
             commands::paste_item,
@@ -206,6 +213,40 @@ fn hide_panel<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
             window.hide().ok();
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn start_panel_focus_watchdog<R: tauri::Runtime + 'static>(
+    app: tauri::AppHandle<R>,
+    visible: Arc<AtomicBool>,
+) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        if !visible.load(Ordering::SeqCst) {
+            continue;
+        }
+
+        let app_for_main = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Ok(panel) = app_for_main.get_webview_panel("main") {
+                unsafe {
+                    use tauri_nspanel::objc2::msg_send;
+                    use tauri_nspanel::objc2::runtime::AnyObject;
+                    let ns_panel = panel.as_panel();
+                    let is_visible: bool = msg_send![ns_panel, isVisible];
+                    let is_key: bool = msg_send![ns_panel, isKeyWindow];
+                    if !is_visible || is_key {
+                        return;
+                    }
+
+                    // 全屏 Space 切换后 NSPanel 可能仍显示但丢失 key 状态，导致 WebView 收不到鼠标事件。
+                    let ns_app: *mut AnyObject = msg_send![tauri_nspanel::objc2::class!(NSApplication), sharedApplication];
+                    let _: () = msg_send![ns_app, activateIgnoringOtherApps: true];
+                    let _: () = msg_send![ns_panel, makeKeyAndOrderFront: std::ptr::null::<std::ffi::c_void>()];
+                }
+            }
+        });
+    });
 }
 
 fn dirs_next() -> Option<String> {
