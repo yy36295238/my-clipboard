@@ -46,9 +46,22 @@ interface ClipboardItem {
   pinned: boolean;
 }
 
-type Tab = "history" | "favorites" | "images";
+type ContentTypeTab = "history" | "text" | "image" | "json" | "url" | "code" | "markdown" | "email" | "phone";
+type Tab = ContentTypeTab | "favorites";
 type DateFilter = "all" | "today" | "yesterday" | "beforeYesterday" | "custom";
 type DatePickerTarget = "start" | "end" | null;
+
+const contentTypes = [
+  { value: "history", label: "全部" },
+  { value: "text", label: "text" },
+  { value: "image", label: "image" },
+  { value: "json", label: "json" },
+  { value: "url", label: "url" },
+  { value: "code", label: "code" },
+  { value: "markdown", label: "markdown" },
+  { value: "email", label: "email" },
+  { value: "phone", label: "phone" },
+] satisfies { value: ContentTypeTab; label: string }[];
 
 function App() {
   const [items, setItems] = useState<ClipboardItem[]>([]);
@@ -61,6 +74,7 @@ function App() {
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
   const [viewCopied, setViewCopied] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const [totalCount, setTotalCount] = useState(0);
   const [dateFilter, setDateFilter] = useState<DateFilter>("all");
   const [customStartDate, setCustomStartDate] = useState("");
   const [customEndDate, setCustomEndDate] = useState("");
@@ -70,6 +84,7 @@ function App() {
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const dateRangeRef = useRef<HTMLDivElement>(null);
+  const totalCountRef = useRef(0);
 
   // Fix #8: Debounce search
   useEffect(() => {
@@ -103,6 +118,8 @@ function App() {
     offsetRef.current = 0;
     setHasMore(true);
     hasMoreRef.current = true;
+    setTotalCount(0);
+    totalCountRef.current = 0;
     setItems([]);
   }, [debouncedQuery, tab, dateRange.startAt, dateRange.endAt]);
 
@@ -110,17 +127,27 @@ function App() {
     let result: ClipboardItem[];
     const rangeArgs = { startAt: dateRange.startAt, endAt: dateRange.endAt };
     const hasDateFilter = dateRange.startAt !== undefined || dateRange.endAt !== undefined;
+    const countArgs = {
+      query: tab === "history" ? debouncedQuery : "",
+      contentType: tab !== "history" && tab !== "favorites" ? tab : null,
+      favoritesOnly: tab === "favorites",
+      ...rangeArgs,
+    };
+    const total = currentOffset === 0
+      ? await invoke<number>("count_items", countArgs)
+      : totalCountRef.current;
+    if (currentOffset === 0) {
+      setTotalCount(total);
+      totalCountRef.current = total;
+    }
     if (tab === "favorites") {
       result = hasDateFilter
-        ? await invoke("get_favorites_filtered", rangeArgs)
-        : await invoke("get_favorites");
-      setItems(result);
-      setHasMore(false);
-      return;
-    } else if (tab === "images") {
+        ? await invoke("get_favorites_filtered", { offset: currentOffset, ...rangeArgs })
+        : await invoke("get_favorites", { offset: currentOffset });
+    } else if (tab !== "history") {
       result = hasDateFilter
-        ? await invoke("get_images_filtered", { offset: currentOffset, ...rangeArgs })
-        : await invoke("get_images", { offset: currentOffset });
+        ? await invoke("get_items_by_type_filtered", { contentType: tab, offset: currentOffset, ...rangeArgs })
+        : await invoke("get_items_by_type", { contentType: tab, offset: currentOffset });
     } else if (debouncedQuery) {
       result = hasDateFilter
         ? await invoke("search_items_filtered", { query: debouncedQuery, offset: currentOffset, ...rangeArgs })
@@ -139,8 +166,9 @@ function App() {
         return [...prev, ...newItems];
       });
     }
-    setHasMore(result.length === 30);
-    hasMoreRef.current = result.length === 30;
+    const loadedCount = currentOffset === 0 ? result.length : items.length + result.length;
+    setHasMore(loadedCount < total);
+    hasMoreRef.current = loadedCount < total;
     setSelectedIdx(idx => Math.min(idx, Math.max(0, (currentOffset === 0 ? result.length : items.length + result.length) - 1)));
   }, [debouncedQuery, tab, dateRange.startAt, dateRange.endAt]);
 
@@ -241,6 +269,8 @@ function App() {
   // Delete immediately
   const handleDelete = async (item: ClipboardItem) => {
     setItems(prev => prev.filter(i => i.id !== item.id));
+    setTotalCount(prev => Math.max(0, prev - 1));
+    totalCountRef.current = Math.max(0, totalCountRef.current - 1);
     await invoke("delete_item", { id: item.id });
   };
 
@@ -248,9 +278,7 @@ function App() {
     await invoke("delete_all_items");
     setConfirmDeleteAll(false);
     offsetRef.current = 0;
-    setItems([]);
-    setHasMore(false);
-    hasMoreRef.current = false;
+    await loadItems(0);
   };
 
   const startEdit = (item: ClipboardItem) => {
@@ -301,19 +329,23 @@ function App() {
 
       {/* Tabs */}
       <div className="tab-bar">
-        <button className={`tab ${tab === "history" ? "tab-active" : ""}`} onMouseDown={() => setTab("history")} onClick={() => setTab("history")}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-          全部类型
-        </button>
-        <button className={`tab ${tab === "images" ? "tab-active" : ""}`} onMouseDown={() => setTab("images")} onClick={() => setTab("images")}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-          图片
-        </button>
-        <button className={`tab ${tab === "favorites" ? "tab-active" : ""}`} onMouseDown={() => setTab("favorites")} onClick={() => setTab("favorites")}>
+        <div className="type-tabs">
+          {contentTypes.map(type => (
+            <button
+              key={type.value}
+              className={`tab ${tab === type.value ? "tab-active" : ""}`}
+              onMouseDown={() => setTab(type.value)}
+              onClick={() => setTab(type.value)}
+            >
+              {type.label}
+            </button>
+          ))}
+        </div>
+        <span className="item-count">{items.length}/{totalCount}</span>
+        <button className={`tab favorite-tab ${tab === "favorites" ? "tab-active" : ""}`} onMouseDown={() => setTab("favorites")} onClick={() => setTab("favorites")}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
           收藏
         </button>
-        <span className="item-count">{items.length} 条</span>
       </div>
 
       <div className="filter-bar">
@@ -413,13 +445,13 @@ function App() {
             <span>复制内容后将自动显示在这里</span>
           </div>
         )}
-        {hasMore && items.length > 0 && tab !== "favorites" && (
+        {hasMore && items.length > 0 && (
           <div className="load-more-hint">滚动加载更多</div>
         )}
-        {!hasMore && items.length > 0 && tab !== "favorites" && (
-          <div className="load-more-hint">— 已加载全部 {items.length} 条 —</div>
+        {!hasMore && items.length > 0 && (
+          <div className="load-more-hint">— 已加载全部 {items.length}/{totalCount} —</div>
         )}
-        {tab === "images" && items.length === 0 && (
+        {tab === "image" && items.length === 0 && (
           <div className="empty-state">
             <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.3"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
             <p>暂无图片记录</p>
@@ -469,7 +501,7 @@ function App() {
         <div className="edit-modal-overlay" onClick={() => setConfirmDeleteAll(false)} onKeyDown={e => { if (e.key === "Escape") setConfirmDeleteAll(false); }} tabIndex={-1} ref={el => el?.focus()}>
           <div className="confirm-modal" onClick={e => e.stopPropagation()}>
             <div className="confirm-title">删除全部记录</div>
-            <p className="confirm-text">此操作会清空全部剪贴板历史，包括收藏和置顶记录，删除后无法恢复。</p>
+            <p className="confirm-text">此操作会清空未收藏的剪贴板历史，收藏夹内容会保留，删除后无法恢复。</p>
             <div className="confirm-actions">
               <button className="edit-btn cancel" onClick={() => setConfirmDeleteAll(false)}>取消</button>
               <button className="edit-btn danger" onClick={handleDeleteAll}>确认删除</button>

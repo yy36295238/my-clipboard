@@ -33,15 +33,21 @@ pub fn get_history_filtered(offset: usize, start_at: Option<i64>, end_at: Option
     state.db.search_filtered("", 30, offset, start_at, end_at)
 }
 
+/// 统计当前筛选条件下的剪贴板记录总数，用于前端展示已加载数量和总数。
 #[tauri::command]
-pub fn get_favorites(state: State<AppState>) -> Vec<ClipboardItem> {
-    state.db.get_favorites(50)
+pub fn count_items(query: String, content_type: Option<String>, favorites_only: bool, start_at: Option<i64>, end_at: Option<i64>, state: State<AppState>) -> usize {
+    state.db.count_items(&query, content_type.as_deref(), favorites_only, start_at, end_at)
+}
+
+#[tauri::command]
+pub fn get_favorites(offset: usize, state: State<AppState>) -> Vec<ClipboardItem> {
+    state.db.get_favorites_filtered(30, offset, None, None)
 }
 
 /// 按日期范围查询收藏记录。
 #[tauri::command]
-pub fn get_favorites_filtered(start_at: Option<i64>, end_at: Option<i64>, state: State<AppState>) -> Vec<ClipboardItem> {
-    state.db.get_favorites_filtered(50, start_at, end_at)
+pub fn get_favorites_filtered(offset: usize, start_at: Option<i64>, end_at: Option<i64>, state: State<AppState>) -> Vec<ClipboardItem> {
+    state.db.get_favorites_filtered(30, offset, start_at, end_at)
 }
 
 #[tauri::command]
@@ -53,6 +59,18 @@ pub fn get_images(offset: usize, state: State<AppState>) -> Vec<ClipboardItem> {
 #[tauri::command]
 pub fn get_images_filtered(offset: usize, start_at: Option<i64>, end_at: Option<i64>, state: State<AppState>) -> Vec<ClipboardItem> {
     state.db.get_images_filtered(30, offset, start_at, end_at)
+}
+
+/// 按内容类型查询剪贴板记录，用于前端展示 text、image、json 等全部支持类型。
+#[tauri::command]
+pub fn get_items_by_type(content_type: String, offset: usize, state: State<AppState>) -> Vec<ClipboardItem> {
+    state.db.get_by_type_filtered(&content_type, 30, offset, None, None)
+}
+
+/// 按内容类型和日期范围查询剪贴板记录。
+#[tauri::command]
+pub fn get_items_by_type_filtered(content_type: String, offset: usize, start_at: Option<i64>, end_at: Option<i64>, state: State<AppState>) -> Vec<ClipboardItem> {
+    state.db.get_by_type_filtered(&content_type, 30, offset, start_at, end_at)
 }
 
 #[tauri::command]
@@ -70,7 +88,7 @@ pub fn delete_item(id: String, state: State<AppState>) {
     state.db.delete(&id);
 }
 
-/// 删除全部剪贴板记录，前端负责二次确认后再调用。
+/// 删除未收藏的剪贴板记录，收藏夹内容由数据库层保留，前端负责二次确认后再调用。
 #[tauri::command]
 pub fn delete_all_items(state: State<AppState>) -> usize {
     state.db.delete_all()

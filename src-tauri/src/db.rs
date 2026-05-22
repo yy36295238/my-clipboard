@@ -85,6 +85,25 @@ impl Database {
         self.query_items(&conn, query, None, false, query.is_empty(), limit, offset, start_at, end_at)
     }
 
+    /// 统计当前筛选条件下的记录总数，用于前端展示“已加载/总数”。
+    pub fn count_items(&self, query: &str, content_type: Option<&str>, favorites_only: bool, start_at: Option<i64>, end_at: Option<i64>) -> usize {
+        let conn = self.conn.lock().unwrap();
+        let mut filters = Vec::new();
+        let mut values: Vec<Box<dyn ToSql>> = Vec::new();
+
+        Self::append_filters(&mut filters, &mut values, query, content_type, favorites_only, start_at, end_at);
+
+        let where_clause = if filters.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", filters.join(" AND "))
+        };
+        let sql = format!("SELECT COUNT(*) FROM clipboard_items{}", where_clause);
+        let params = values.iter().map(|value| value.as_ref() as &dyn ToSql);
+        conn.query_row(&sql, rusqlite::params_from_iter(params), |row| row.get::<_, i64>(0))
+            .unwrap_or(0) as usize
+    }
+
     fn query_items(
         &self,
         conn: &Connection,
@@ -100,25 +119,7 @@ impl Database {
         let mut filters = Vec::new();
         let mut values: Vec<Box<dyn ToSql>> = Vec::new();
 
-        if favorites_only {
-            filters.push("favorite = 1".to_string());
-        }
-        if let Some(content_type) = content_type {
-            filters.push("content_type = ?".to_string());
-            values.push(Box::new(content_type.to_string()));
-        }
-        for term in query.split_whitespace() {
-            filters.push("content LIKE ?".to_string());
-            values.push(Box::new(format!("%{}%", term)));
-        }
-        if let Some(start_at) = start_at {
-            filters.push("created_at >= ?".to_string());
-            values.push(Box::new(start_at));
-        }
-        if let Some(end_at) = end_at {
-            filters.push("created_at < ?".to_string());
-            values.push(Box::new(end_at));
-        }
+        Self::append_filters(&mut filters, &mut values, query, content_type, favorites_only, start_at, end_at);
 
         let where_clause = if filters.is_empty() {
             String::new()
@@ -147,6 +148,36 @@ impl Database {
             .collect()
     }
 
+    fn append_filters(
+        filters: &mut Vec<String>,
+        values: &mut Vec<Box<dyn ToSql>>,
+        query: &str,
+        content_type: Option<&str>,
+        favorites_only: bool,
+        start_at: Option<i64>,
+        end_at: Option<i64>,
+    ) {
+        if favorites_only {
+            filters.push("favorite = 1".to_string());
+        }
+        if let Some(content_type) = content_type {
+            filters.push("content_type = ?".to_string());
+            values.push(Box::new(content_type.to_string()));
+        }
+        for term in query.split_whitespace() {
+            filters.push("content LIKE ?".to_string());
+            values.push(Box::new(format!("%{}%", term)));
+        }
+        if let Some(start_at) = start_at {
+            filters.push("created_at >= ?".to_string());
+            values.push(Box::new(start_at));
+        }
+        if let Some(end_at) = end_at {
+            filters.push("created_at < ?".to_string());
+            values.push(Box::new(end_at));
+        }
+    }
+
     fn recent(&self, conn: &Connection, limit: usize, offset: usize) -> Vec<ClipboardItem> {
         let mut stmt = conn.prepare(
             "SELECT id, content, content_type, created_at, favorite, pinned
@@ -156,23 +187,28 @@ impl Database {
     }
 
     pub fn get_favorites(&self, limit: usize) -> Vec<ClipboardItem> {
-        self.get_favorites_filtered(limit, None, None)
+        self.get_favorites_filtered(limit, 0, None, None)
     }
 
     /// 查询收藏记录，可叠加日期范围过滤。
-    pub fn get_favorites_filtered(&self, limit: usize, start_at: Option<i64>, end_at: Option<i64>) -> Vec<ClipboardItem> {
+    pub fn get_favorites_filtered(&self, limit: usize, offset: usize, start_at: Option<i64>, end_at: Option<i64>) -> Vec<ClipboardItem> {
         let conn = self.conn.lock().unwrap();
-        self.query_items(&conn, "", None, true, false, limit, 0, start_at, end_at)
+        self.query_items(&conn, "", None, true, false, limit, offset, start_at, end_at)
     }
 
     pub fn get_images(&self, limit: usize, offset: usize) -> Vec<ClipboardItem> {
         self.get_images_filtered(limit, offset, None, None)
     }
 
+    /// 按内容类型查询记录，可叠加日期范围过滤。
+    pub fn get_by_type_filtered(&self, content_type: &str, limit: usize, offset: usize, start_at: Option<i64>, end_at: Option<i64>) -> Vec<ClipboardItem> {
+        let conn = self.conn.lock().unwrap();
+        self.query_items(&conn, "", Some(content_type), false, false, limit, offset, start_at, end_at)
+    }
+
     /// 查询图片记录，可叠加日期范围过滤。
     pub fn get_images_filtered(&self, limit: usize, offset: usize, start_at: Option<i64>, end_at: Option<i64>) -> Vec<ClipboardItem> {
-        let conn = self.conn.lock().unwrap();
-        self.query_items(&conn, "", Some("image"), false, false, limit, offset, start_at, end_at)
+        self.get_by_type_filtered("image", limit, offset, start_at, end_at)
     }
 
     pub fn toggle_favorite(&self, id: &str) -> bool {
@@ -200,10 +236,10 @@ impl Database {
         conn.execute("DELETE FROM clipboard_items WHERE id = ?1", params![id]).ok();
     }
 
-    /// 清空全部剪贴板记录，包含收藏和置顶记录。
+    /// 清空非收藏的剪贴板记录，收藏夹内容需要保留，避免误删长期保存的数据。
     pub fn delete_all(&self) -> usize {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM clipboard_items", []).unwrap_or(0)
+        conn.execute("DELETE FROM clipboard_items WHERE favorite = 0", []).unwrap_or(0)
     }
 
     /// Remove old items beyond the limit, keeping favorites and pinned

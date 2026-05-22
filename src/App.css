@@ -111,6 +111,16 @@ body {
   -webkit-app-region: no-drag;
 }
 
+.type-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.type-tabs::-webkit-scrollbar { display: none; }
+
 .tab {
   display: flex;
   align-items: center;
@@ -124,15 +134,19 @@ body {
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.15s ease;
+  white-space: nowrap;
 }
 .tab:hover { color: var(--text-secondary); background: var(--surface); }
 .tab-active { color: var(--text); background: var(--surface); }
+
+.favorite-tab { margin-left: auto; }
 
 .item-count {
   margin-left: auto;
   font-size: 11px;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .filter-bar {
@@ -145,8 +159,8 @@ body {
 }
 
 .filter-chip {
-  padding: 5px 9px;
-  font-size: 11px;
+  padding: 6px 10px;
+  font-size: 12px;
   color: var(--text-muted);
   background: none;
   border: 1px solid transparent;
