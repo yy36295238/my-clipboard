@@ -186,10 +186,6 @@ impl Database {
         stmt.query_map(params![limit as i64, offset as i64], |row| Self::row_to_item(row)).unwrap().filter_map(|r| r.ok()).collect()
     }
 
-    pub fn get_favorites(&self, limit: usize) -> Vec<ClipboardItem> {
-        self.get_favorites_filtered(limit, 0, None, None)
-    }
-
     /// 查询收藏记录，可叠加日期范围过滤。
     pub fn get_favorites_filtered(&self, limit: usize, offset: usize, start_at: Option<i64>, end_at: Option<i64>) -> Vec<ClipboardItem> {
         let conn = self.conn.lock().unwrap();
