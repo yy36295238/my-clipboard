@@ -15,9 +15,11 @@ use crate::db::{ClipboardItem, Database};
 pub fn detect_type(content: &str) -> &'static str {
     let trimmed = content.trim();
 
-    // JSON: must parse as valid JSON
+    // JSON: 支持严格 JSON，也兼容带 // 字段说明的配置片段，避免被代码评分误判成 code。
     if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+        if serde_json::from_str::<serde_json::Value>(trimmed).is_ok()
+            || serde_json::from_str::<serde_json::Value>(&strip_json_line_comments(trimmed)).is_ok()
+        {
             return "json";
         }
     }
@@ -68,6 +70,47 @@ fn is_phone(content: &str) -> bool {
     if content.contains('\n') { return false; }
     let digits: String = content.chars().filter(|c| c.is_ascii_digit()).collect();
     digits.len() == 11 && digits.starts_with('1')
+}
+
+fn strip_json_line_comments(content: &str) -> String {
+    content
+        .lines()
+        .map(strip_json_line_comment)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn strip_json_line_comment(line: &str) -> &str {
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut prev_slash: Option<usize> = None;
+
+    for (idx, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            prev_slash = None;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escaped = true;
+            prev_slash = None;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            prev_slash = None;
+            continue;
+        }
+        if ch == '/' && !in_string {
+            if let Some(start) = prev_slash {
+                return &line[..start];
+            }
+            prev_slash = Some(idx);
+        } else {
+            prev_slash = None;
+        }
+    }
+    line
 }
 
 fn compute_code_score(content: &str) -> u8 {
@@ -191,6 +234,37 @@ fn is_markdown(content: &str) -> bool {
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::detect_type;
+
+    #[test]
+    fn detects_json_with_line_comments() {
+        let content = r#"{
+    "groupPriceList" : {
+               "currencyType": 1, // 是否是人民币 0：人民币 1：外币，(选填)
+                "currencyCode": "CNY", // 币种，(必填)
+                "currencyDesc": "人民币元" // 币种描述，(选填)
+     },
+    "otherCurrencyType": 1, // 是否是人民币 0：人民币 1：外币，(选填)
+    "otherCurrencyCode": "CNY", // 币种，(必填)
+    "otherCurrencyDesc": "人民币元" // 币种描述，(选填)
+}"#;
+
+        assert_eq!(detect_type(content), "json");
+    }
+
+    #[test]
+    fn keeps_double_slash_inside_json_string() {
+        let content = r#"{
+  "url": "https://example.com/a//b", // 链接说明
+  "name": "demo"
+}"#;
+
+        assert_eq!(detect_type(content), "json");
+    }
 }
 
 pub fn start_monitor(db: Arc<Database>, app: tauri::AppHandle) {
