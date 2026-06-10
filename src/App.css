@@ -361,6 +361,16 @@ body {
 
 .item-body { flex: 1; min-width: 0; overflow: hidden; }
 
+.item-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .item-text {
   font-size: 13px;
   line-height: 1.5;
@@ -471,6 +481,24 @@ body {
   color: var(--text-secondary);
 }
 
+/* Toast */
+.toast {
+  position: absolute;
+  bottom: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 18px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  z-index: 100;
+  animation: toast-in 0.2s ease;
+  pointer-events: none;
+}
+
 /* Undo Toast */
 .undo-toast {
   position: absolute;
@@ -563,6 +591,9 @@ body {
 .edit-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(5,150,105,0.2); }
 
 .edit-actions { display: flex; align-items: center; gap: 8px; }
+
+.group-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.group-chips .filter-chip { border-color: var(--border); }
 
 .edit-btn {
   padding: 6px 16px;

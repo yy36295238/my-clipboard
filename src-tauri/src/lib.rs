@@ -92,24 +92,21 @@ pub fn run() {
                     let _: () = msg_send![ns_panel, setMovable: true];
                     let _: () = msg_send![ns_panel, setBecomesKeyOnlyIfNeeded: false];
                 }
-                start_panel_focus_watchdog(app.handle().clone(), visible.clone());
             }
 
-            // Register global shortcut (Cmd+Shift+V)
-            app.global_shortcut().register(shortcut)?;
+            // Register global shortcut (Cmd+Shift+V); 被其他应用占用时降级为日志告警而不是启动失败
+            if let Err(e) = app.global_shortcut().register(shortcut) {
+                log::warn!("全局快捷键 ⌘⇧V 注册失败(可能被其他应用占用): {e}");
+            }
 
             // Create system tray
             use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
             let show = MenuItemBuilder::with_id("show", "显示剪贴板  ⌘⇧V").build(app)?;
             let sep1 = PredefinedMenuItem::separator(app)?;
-            let about = MenuItemBuilder::with_id("about", "关于 AI Clipboard").build(app)?;
-            let sep2 = PredefinedMenuItem::separator(app)?;
             let quit = MenuItemBuilder::with_id("quit", "退出").accelerator("CmdOrCtrl+Q").build(app)?;
             let menu = MenuBuilder::new(app)
                 .item(&show)
                 .item(&sep1)
-                .item(&about)
-                .item(&sep2)
                 .item(&quit)
                 .build()?;
 
@@ -161,6 +158,8 @@ pub fn run() {
             commands::get_items_by_type_filtered,
             commands::toggle_favorite,
             commands::toggle_pin,
+            commands::set_snippet_meta,
+            commands::get_snippet_groups,
             commands::delete_item,
             commands::delete_all_items,
             commands::update_item,
@@ -175,8 +174,8 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-fn show_panel<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    eprintln!("[show] called");
+fn show_panel<R: tauri::Runtime + 'static>(app: &tauri::AppHandle<R>) {
+    position_panel_centered(app);
     #[cfg(target_os = "macos")]
     {
         if let Ok(panel) = app.get_webview_panel("main") {
@@ -191,6 +190,7 @@ fn show_panel<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
                 let _: () = msg_send![ns_panel, makeKeyAndOrderFront: std::ptr::null::<std::ffi::c_void>()];
             }
             let _ = app.emit("panel-shown", ());
+            spawn_focus_watchdog(app.clone());
         }
     }
     #[cfg(not(target_os = "macos"))]
@@ -202,8 +202,28 @@ fn show_panel<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+/// 在鼠标所在显示器的中央弹出面板(多显示器时跟随鼠标所在屏幕)。
+fn position_panel_centered<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let Some(window) = app.get_webview_window("main") else { return };
+    let Ok(size) = window.outer_size() else { return };
+
+    let monitor = app
+        .cursor_position()
+        .ok()
+        .and_then(|c| app.monitor_from_point(c.x, c.y).ok().flatten())
+        .or_else(|| window.current_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        window.center().ok();
+        return;
+    };
+    let pos = monitor.position();
+    let dim = monitor.size();
+    let x = pos.x as f64 + (dim.width as f64 - size.width as f64) / 2.0;
+    let y = pos.y as f64 + (dim.height as f64 - size.height as f64) / 2.0;
+    window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32)).ok();
+}
+
 fn hide_panel<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    eprintln!("[hide] called");
     #[cfg(target_os = "macos")]
     {
         if let Ok(panel) = app.get_webview_panel("main") {
@@ -218,37 +238,43 @@ fn hide_panel<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+/// 面板弹出后短暂守护 key window 状态（全屏 Space 等场景下刚显示时可能丢失 key），
+/// 约 3 秒后自动退出，避免常驻线程每 250ms 唤醒一次。
 #[cfg(target_os = "macos")]
-fn start_panel_focus_watchdog<R: tauri::Runtime + 'static>(
-    app: tauri::AppHandle<R>,
-    visible: Arc<AtomicBool>,
-) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        if !visible.load(Ordering::SeqCst) {
-            continue;
-        }
-
-        let app_for_main = app.clone();
-        let _ = app.run_on_main_thread(move || {
-            if let Ok(panel) = app_for_main.get_webview_panel("main") {
-                unsafe {
-                    use tauri_nspanel::objc2::msg_send;
-                    use tauri_nspanel::objc2::runtime::AnyObject;
-                    let ns_panel = panel.as_panel();
-                    let is_visible: bool = msg_send![ns_panel, isVisible];
-                    let is_key: bool = msg_send![ns_panel, isKeyWindow];
-                    if !is_visible || is_key {
-                        return;
-                    }
-
-                    // 全屏 Space 切换后 NSPanel 可能仍显示但丢失 key 状态，导致 WebView 收不到鼠标事件。
-                    let ns_app: *mut AnyObject = msg_send![tauri_nspanel::objc2::class!(NSApplication), sharedApplication];
-                    let _: () = msg_send![ns_app, activateIgnoringOtherApps: true];
-                    let _: () = msg_send![ns_panel, makeKeyAndOrderFront: std::ptr::null::<std::ffi::c_void>()];
-                }
+fn spawn_focus_watchdog<R: tauri::Runtime + 'static>(app: tauri::AppHandle<R>) {
+    std::thread::spawn(move || {
+        let stop = Arc::new(AtomicBool::new(false));
+        for _ in 0..12 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if stop.load(Ordering::SeqCst) {
+                break;
             }
-        });
+            let app_for_main = app.clone();
+            let stop_for_main = stop.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Ok(panel) = app_for_main.get_webview_panel("main") {
+                    unsafe {
+                        use tauri_nspanel::objc2::msg_send;
+                        use tauri_nspanel::objc2::runtime::AnyObject;
+                        let ns_panel = panel.as_panel();
+                        let is_visible: bool = msg_send![ns_panel, isVisible];
+                        if !is_visible {
+                            stop_for_main.store(true, Ordering::SeqCst);
+                            return;
+                        }
+                        let is_key: bool = msg_send![ns_panel, isKeyWindow];
+                        if is_key {
+                            return;
+                        }
+
+                        // 面板仍显示但丢失 key 状态，导致 WebView 收不到鼠标事件，重新激活。
+                        let ns_app: *mut AnyObject = msg_send![tauri_nspanel::objc2::class!(NSApplication), sharedApplication];
+                        let _: () = msg_send![ns_app, activateIgnoringOtherApps: true];
+                        let _: () = msg_send![ns_panel, makeKeyAndOrderFront: std::ptr::null::<std::ffi::c_void>()];
+                    }
+                }
+            });
+        }
     });
 }
 

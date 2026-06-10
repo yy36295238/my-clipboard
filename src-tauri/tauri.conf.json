@@ -22,7 +22,8 @@
         "transparent": true,
         "alwaysOnTop": true,
         "visible": false,
-        "center": true
+        "center": true,
+        "acceptFirstMouse": true
       }
     ],
     "security": {

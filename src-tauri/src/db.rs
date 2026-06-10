@@ -12,6 +12,12 @@ pub struct ClipboardItem {
     pub created_at: i64,
     pub favorite: bool,
     pub pinned: bool,
+    /// 片段名称,收藏后可自定义,空串表示未命名
+    #[serde(default)]
+    pub name: String,
+    /// 片段分组,空串表示未分组
+    #[serde(rename = "groupName", default)]
+    pub group_name: String,
 }
 
 pub struct Database {
@@ -30,29 +36,87 @@ impl Database {
                 favorite INTEGER NOT NULL DEFAULT 0,
                 pinned INTEGER NOT NULL DEFAULT 0
             );
-            CREATE VIRTUAL TABLE IF NOT EXISTS clipboard_fts USING fts5(
-                content, content='clipboard_items', content_rowid='rowid'
-            );
-            CREATE TRIGGER IF NOT EXISTS clipboard_ai AFTER INSERT ON clipboard_items BEGIN
-                INSERT INTO clipboard_fts(rowid, content) VALUES (new.rowid, new.content);
-            END;
-            CREATE TRIGGER IF NOT EXISTS clipboard_ad AFTER DELETE ON clipboard_items BEGIN
-                INSERT INTO clipboard_fts(clipboard_fts, rowid, content) VALUES('delete', old.rowid, old.content);
-            END;
-            CREATE TRIGGER IF NOT EXISTS clipboard_au AFTER UPDATE ON clipboard_items BEGIN
-                INSERT INTO clipboard_fts(clipboard_fts, rowid, content) VALUES('delete', old.rowid, old.content);
-                INSERT INTO clipboard_fts(rowid, content) VALUES (new.rowid, new.content);
-            END;"
+            DROP TRIGGER IF EXISTS clipboard_ai;
+            DROP TRIGGER IF EXISTS clipboard_ad;
+            DROP TRIGGER IF EXISTS clipboard_au;
+            DROP TABLE IF EXISTS clipboard_fts;"
         ).expect("Failed to create tables");
+        // 增量迁移:老库没有这些列时补上,已存在时报错忽略
+        conn.execute("ALTER TABLE clipboard_items ADD COLUMN name TEXT NOT NULL DEFAULT ''", []).ok();
+        conn.execute("ALTER TABLE clipboard_items ADD COLUMN group_name TEXT NOT NULL DEFAULT ''", []).ok();
+        conn.execute("ALTER TABLE clipboard_items ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''", []).ok();
         Database { conn: Mutex::new(conn) }
     }
 
     pub fn insert(&self, item: &ClipboardItem) {
+        self.insert_with_hash(item, "");
+    }
+
+    /// 插入记录并携带内容哈希(目前仅图片使用,用于跨时间去重)。
+    pub fn insert_with_hash(&self, item: &ClipboardItem, content_hash: &str) {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR IGNORE INTO clipboard_items (id, content, content_type, created_at, favorite, pinned) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![item.id, item.content, item.content_type, item.created_at, item.favorite as i32, item.pinned as i32],
+            "INSERT OR IGNORE INTO clipboard_items (id, content, content_type, created_at, favorite, pinned, name, group_name, content_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![item.id, item.content, item.content_type, item.created_at, item.favorite as i32, item.pinned as i32, item.name, item.group_name, content_hash],
         ).ok();
+    }
+
+    /// 按内容哈希查找已存在的图片记录。
+    pub fn find_image_id_by_hash(&self, hash: &str) -> Option<String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id FROM clipboard_items WHERE content_type = 'image' AND content_hash = ?1 LIMIT 1",
+            params![hash],
+            |row| row.get(0),
+        ).ok()
+    }
+
+    /// 刷新指定记录的时间戳,使其排到列表最前。
+    pub fn touch_id(&self, id: &str) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE clipboard_items SET created_at = ?2 WHERE id = ?1",
+            params![id, chrono::Utc::now().timestamp()],
+        ).ok();
+    }
+
+    /// 还没有内容哈希的图片记录(老数据),用于启动时补算。
+    pub fn images_missing_hash(&self) -> Vec<(String, String)> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn.prepare(
+            "SELECT id, content FROM clipboard_items WHERE content_type = 'image' AND content_hash = ''"
+        ) {
+            Ok(stmt) => stmt,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn set_content_hash(&self, id: &str, hash: &str) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE clipboard_items SET content_hash = ?2 WHERE id = ?1",
+            params![id, hash],
+        ).ok();
+    }
+
+    /// 清理重复图片:同一哈希只保留最新一条,收藏/置顶的不删。返回删除条数。
+    pub fn dedupe_images(&self) -> usize {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM clipboard_items
+             WHERE content_type = 'image' AND favorite = 0 AND pinned = 0 AND content_hash != ''
+               AND id NOT IN (
+                 SELECT id FROM (
+                   SELECT id, MAX(created_at) FROM clipboard_items
+                   WHERE content_type = 'image' AND content_hash != ''
+                   GROUP BY content_hash
+                 )
+               )",
+            [],
+        ).unwrap_or(0)
     }
 
     pub fn has_content(&self, content: &str) -> bool {
@@ -126,13 +190,16 @@ impl Database {
         } else {
             format!(" WHERE {}", filters.join(" AND "))
         };
-        let order_by = if pinned_first {
+        let order_by = if favorites_only {
+            // 片段按分组聚合展示,未分组(空串)排最前,组内仍置顶优先
+            "group_name ASC, pinned DESC, created_at DESC"
+        } else if pinned_first {
             "pinned DESC, created_at DESC"
         } else {
             "created_at DESC"
         };
         let sql = format!(
-            "SELECT id, content, content_type, created_at, favorite, pinned
+            "SELECT id, content, content_type, created_at, favorite, pinned, name, group_name
              FROM clipboard_items{} ORDER BY {} LIMIT ? OFFSET ?",
             where_clause, order_by
         );
@@ -165,8 +232,9 @@ impl Database {
             values.push(Box::new(content_type.to_string()));
         }
         for term in query.split_whitespace() {
-            filters.push("content LIKE ?".to_string());
-            values.push(Box::new(format!("%{}%", term)));
+            let escaped = term.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+            filters.push("content LIKE ? ESCAPE '\\'".to_string());
+            values.push(Box::new(format!("%{}%", escaped)));
         }
         if let Some(start_at) = start_at {
             filters.push("created_at >= ?".to_string());
@@ -180,7 +248,7 @@ impl Database {
 
     fn recent(&self, conn: &Connection, limit: usize, offset: usize) -> Vec<ClipboardItem> {
         let mut stmt = conn.prepare(
-            "SELECT id, content, content_type, created_at, favorite, pinned
+            "SELECT id, content, content_type, created_at, favorite, pinned, name, group_name
              FROM clipboard_items ORDER BY pinned DESC, created_at DESC LIMIT ?1 OFFSET ?2"
         ).unwrap();
         stmt.query_map(params![limit as i64, offset as i64], |row| Self::row_to_item(row)).unwrap().filter_map(|r| r.ok()).collect()
@@ -235,7 +303,7 @@ impl Database {
     /// 清空非收藏的剪贴板记录，收藏夹内容需要保留，避免误删长期保存的数据。
     pub fn delete_all(&self) -> usize {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM clipboard_items WHERE favorite = 0", []).unwrap_or(0)
+        conn.execute("DELETE FROM clipboard_items WHERE favorite = 0 AND pinned = 0", []).unwrap_or(0)
     }
 
     /// Remove old items beyond the limit, keeping favorites and pinned
@@ -252,12 +320,56 @@ impl Database {
         ).ok();
     }
 
-    pub fn update_content(&self, id: &str, content: &str) {
+    pub fn update_content(&self, id: &str, content: &str, content_type: &str) {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE clipboard_items SET content = ?2 WHERE id = ?1",
-            params![id, content],
+            "UPDATE clipboard_items SET content = ?2, content_type = ?3 WHERE id = ?1",
+            params![id, content, content_type],
         ).ok();
+    }
+
+    pub fn get_content_and_type(&self, id: &str) -> Option<(String, String)> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT content, content_type FROM clipboard_items WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).ok()
+    }
+
+    /// 所有图片记录的文件路径,用于孤儿文件清扫。
+    pub fn image_paths(&self) -> Vec<String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn.prepare("SELECT content FROM clipboard_items WHERE content_type = 'image'") {
+            Ok(stmt) => stmt,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map([], |row| row.get::<_, String>(0))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// 更新片段的名称和分组。
+    pub fn set_snippet_meta(&self, id: &str, name: &str, group_name: &str) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE clipboard_items SET name = ?2, group_name = ?3 WHERE id = ?1",
+            params![id, name, group_name],
+        ).ok();
+    }
+
+    /// 已有的片段分组名,用于分组输入框的自动补全。
+    pub fn snippet_groups(&self) -> Vec<String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn.prepare(
+            "SELECT DISTINCT group_name FROM clipboard_items WHERE favorite = 1 AND group_name != '' ORDER BY group_name"
+        ) {
+            Ok(stmt) => stmt,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map([], |row| row.get::<_, String>(0))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
     }
 
     fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClipboardItem> {
@@ -268,6 +380,8 @@ impl Database {
             created_at: row.get(3)?,
             favorite: row.get::<_, i32>(4)? != 0,
             pinned: row.get::<_, i32>(5)? != 0,
+            name: row.get(6)?,
+            group_name: row.get(7)?,
         })
     }
 }

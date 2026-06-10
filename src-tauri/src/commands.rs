@@ -83,20 +83,51 @@ pub fn toggle_pin(id: String, state: State<AppState>) -> bool {
     state.db.toggle_pin(&id)
 }
 
+/// 设置片段的名称和分组(收藏后的记录即片段)。
+#[tauri::command]
+pub fn set_snippet_meta(id: String, name: String, group_name: String, state: State<AppState>) {
+    state.db.set_snippet_meta(&id, name.trim(), group_name.trim());
+}
+
+/// 已有片段分组名,供前端分组输入框自动补全。
+#[tauri::command]
+pub fn get_snippet_groups(state: State<AppState>) -> Vec<String> {
+    state.db.snippet_groups()
+}
+
 #[tauri::command]
 pub fn delete_item(id: String, state: State<AppState>) {
+    let item = state.db.get_content_and_type(&id);
     state.db.delete(&id);
+    // 图片记录删除后同步清掉原图和缩略图,避免磁盘文件泄漏
+    if let Some((content, content_type)) = item {
+        if content_type == "image" {
+            let path = std::path::PathBuf::from(&content);
+            std::fs::remove_file(&path).ok();
+            if let Some(thumb) = crate::monitor::thumb_path(&path) {
+                std::fs::remove_file(thumb).ok();
+            }
+        }
+    }
 }
 
 /// 删除未收藏的剪贴板记录，收藏夹内容由数据库层保留，前端负责二次确认后再调用。
 #[tauri::command]
 pub fn delete_all_items(state: State<AppState>) -> usize {
-    state.db.delete_all()
+    let count = state.db.delete_all();
+    crate::monitor::sweep_orphan_images(&state.db);
+    count
 }
 
+/// 更新内容并重新识别类型,返回新类型给前端;图片记录的类型保持不变。
 #[tauri::command]
-pub fn update_item(id: String, content: String, state: State<AppState>) {
-    state.db.update_content(&id, &content);
+pub fn update_item(id: String, content: String, state: State<AppState>) -> String {
+    let content_type = match state.db.get_content_and_type(&id) {
+        Some((_, t)) if t == "image" => t,
+        _ => detect_type(&content).to_string(),
+    };
+    state.db.update_content(&id, &content, &content_type);
+    content_type
 }
 
 /// Silent copy — only sets clipboard, does NOT close window or simulate paste
@@ -216,6 +247,9 @@ pub fn poll_clipboard(state: State<AppState>) {
     if SKIP_NEXT_CLIPBOARD.load(Ordering::SeqCst) {
         return;
     }
+    if crate::monitor::clipboard_is_concealed() {
+        return;
+    }
     if let Ok(mut clipboard) = arboard::Clipboard::new() {
         if let Ok(text) = clipboard.get_text() {
             if !text.is_empty() {
@@ -229,6 +263,8 @@ pub fn poll_clipboard(state: State<AppState>) {
                         created_at: chrono::Utc::now().timestamp(),
                         favorite: false,
                         pinned: false,
+                        name: String::new(),
+                        group_name: String::new(),
                     };
                     state.db.insert(&item);
                 }
