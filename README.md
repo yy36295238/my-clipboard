@@ -16,6 +16,19 @@
 
 <img width="1902" height="1328" alt="image" src="https://github.com/user-attachments/assets/47f394c2-6a65-462a-8911-635b479d4d1d" />
 
+## 下载安装
+
+1. 前往 [Releases 页面](https://github.com/yy36295238/my-clipboard/releases/latest) 下载最新的 `.dmg` 安装包（当前仅提供 Apple Silicon 版本）
+2. 打开 `.dmg`，把 **AI Clipboard** 拖入 `应用程序` 文件夹
+3. 首次打开时 macOS 会提示"无法验证开发者"（应用未做 Apple 签名），按以下任一方式放行：
+   - 在终端执行（推荐，一步到位）：
+     ```bash
+     sudo xattr -cr "/Applications/AI Clipboard.app"
+     ```
+   - 或在 `应用程序` 中**右键点击应用 → 打开 → 再次点击"打开"**
+   - 或前往 **系统设置 → 隐私与安全性**，在底部点击"仍要打开"
+4. 启动后应用常驻菜单栏（不在 Dock 显示），按 `⌘ + ⇧ + V` 唤起面板
+5. 首次使用"一键粘贴"时，按系统提示在 **系统设置 → 隐私与安全性 → 辅助功能** 中勾选授权本应用
 
 ## 数据存储
 
