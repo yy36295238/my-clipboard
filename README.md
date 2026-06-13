@@ -14,6 +14,9 @@
 - **条目管理**：支持编辑、删除单条记录或清空全部历史；图片自动去重（基于内容哈希），删除时同步清理对应图片文件
 - **纯菜单栏应用**：通过托盘图标常驻，不占用 Dock（`LSUIElement`）
 
+<img width="1902" height="1328" alt="image" src="https://github.com/user-attachments/assets/47f394c2-6a65-462a-8911-635b479d4d1d" />
+
+
 ## 数据存储
 
 所有数据仅保存在本地，不会上传到任何服务器：
