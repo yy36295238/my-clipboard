@@ -281,6 +281,11 @@ pub fn make_key_window(app: tauri::AppHandle) {
         if let Ok(panel) = app.get_webview_panel("main") {
             unsafe {
                 use tauri_nspanel::objc2::msg_send;
+                use tauri_nspanel::objc2::runtime::AnyObject;
+                // 先激活 app 再设为 key window,与 show_panel 保持一致:
+                // app 处于后台(Accessory)时仅 makeKeyWindow 不足以让 WebView 收到鼠标/键盘事件,需一并激活。
+                let ns_app: *mut AnyObject = msg_send![tauri_nspanel::objc2::class!(NSApplication), sharedApplication];
+                let _: () = msg_send![ns_app, activateIgnoringOtherApps: true];
                 let ns_panel = panel.as_panel();
                 let _: () = msg_send![ns_panel, makeKeyWindow];
             }

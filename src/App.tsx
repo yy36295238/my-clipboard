@@ -95,6 +95,7 @@ function App() {
   const [snippetTarget, setSnippetTarget] = useState<ClipboardItem | null>(null);
   const [snippetName, setSnippetName] = useState("");
   const [snippetGroup, setSnippetGroup] = useState("");
+  const [snippetContent, setSnippetContent] = useState("");
   const [snippetGroups, setSnippetGroups] = useState<string[]>([]);
   const [viewCopied, setViewCopied] = useState(false);
   const [hasMore, setHasMore] = useState(true);
@@ -248,6 +249,9 @@ function App() {
 
   useEffect(() => {
     const onMouseDown = (event: MouseEvent) => {
+      // 面板显示后若切到其他 app,再点回来时可能已丢失 key 状态(导致输入框/点击无响应)。
+      // 每次点击补一次 key window(内部幂等、代价极小),修复偶发"卡死不能点击"。
+      invoke("make_key_window");
       if (dateRangeRef.current && !dateRangeRef.current.contains(event.target as Node)) {
         setDatePickerTarget(null);
       }
@@ -266,15 +270,16 @@ function App() {
     await invoke("copy_item", { content, contentType });
   }, []);
 
-  // 打开片段弹窗(命名 + 分组),分组列表用于自动补全
+  // 打开收藏弹窗(命名 + 分组 + 内容),分组列表用于自动补全
   const openSnippetModal = useCallback(async (item: ClipboardItem) => {
     setSnippetTarget(item);
     setSnippetName(item.name);
     setSnippetGroup(item.groupName);
+    setSnippetContent(item.content);
     setSnippetGroups(await invoke<string[]>("get_snippet_groups"));
   }, []);
 
-  // 未收藏 → 弹窗保存为片段;已收藏 → 直接移出片段库
+  // 未收藏 → 弹窗保存为收藏;已收藏 → 直接移出收藏库
   const handleToggleFavorite = useCallback(async (item: ClipboardItem) => {
     if (item.favorite) {
       await invoke("toggle_favorite", { id: item.id });
@@ -286,13 +291,22 @@ function App() {
 
   const saveSnippet = async () => {
     if (!snippetTarget) return;
+    // 图片内容是文件路径不校验;其余类型不允许保存空内容
+    if (snippetTarget.type !== "image" && !snippetContent.trim()) {
+      showToast("内容不能为空");
+      return;
+    }
     try {
       if (!snippetTarget.favorite) {
         await invoke("toggle_favorite", { id: snippetTarget.id });
       }
+      // 图片内容是文件路径,不支持文本编辑;其余类型内容变更时才写库
+      if (snippetTarget.type !== "image" && snippetContent !== snippetTarget.content) {
+        await invoke("update_item", { id: snippetTarget.id, content: snippetContent });
+      }
       await invoke("set_snippet_meta", { id: snippetTarget.id, name: snippetName, groupName: snippetGroup });
       setSnippetTarget(null);
-      showToast("已保存片段");
+      showToast("已保存收藏");
       loadItems(0);
     } catch {
       setSnippetTarget(null);
@@ -401,7 +415,7 @@ function App() {
     return { pinned, unpinned };
   }, [items]);
 
-  // 片段 tab 按分组聚合(后端已按 group_name 排序,这里保序分桶)
+  // 收藏 tab 按分组聚合(后端已按 group_name 排序,这里保序分桶)
   const favoriteGroups = useMemo(() => {
     if (tab !== "favorites") return [];
     const map = new Map<string, ClipboardItem[]>();
@@ -473,7 +487,7 @@ function App() {
         <span className="item-count">{items.length}/{totalCount}</span>
         <button className={`tab favorite-tab ${tab === "favorites" ? "tab-active" : ""}`} onMouseDown={() => setTab("favorites")} onClick={() => setTab("favorites")}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-          片段
+          收藏
         </button>
       </div>
 
@@ -515,7 +529,7 @@ function App() {
       {/* List */}
       <div className="list" ref={listRef}>
         {tab === "favorites" ? (
-          /* 片段按分组分区展示 */
+          /* 收藏按分组分区展示 */
           favoriteGroups.map(([group, list]) => (
             <Fragment key={group || "__ungrouped"}>
               <div className="section-label">
@@ -636,7 +650,7 @@ function App() {
         <div className="edit-modal-overlay" onClick={() => setSnippetTarget(null)} onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); setSnippetTarget(null); } }} tabIndex={-1} ref={focusOverlay}>
           <div className="edit-modal edit-modal-sm" onClick={e => e.stopPropagation()}>
             <div className="view-modal-header">
-              <span>{snippetTarget.favorite ? "编辑片段" : "保存为片段"}</span>
+              <span>{snippetTarget.favorite ? "编辑收藏" : "保存为收藏"}</span>
               <div className="view-modal-actions">
                 <button className="close-btn" onClick={() => setSnippetTarget(null)} title="关闭">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>
@@ -645,7 +659,7 @@ function App() {
             </div>
             <input
               className="edit-input"
-              placeholder="片段名称(可选)"
+              placeholder="收藏名称(可选)"
               value={snippetName}
               onChange={e => setSnippetName(e.target.value)}
               onKeyDown={e => { if (e.key === "Enter") saveSnippet(); }}
@@ -660,6 +674,16 @@ function App() {
               onKeyDown={e => { if (e.key === "Enter") saveSnippet(); }}
               spellCheck={false}
             />
+            {/* 图片内容为文件路径,不提供文本编辑 */}
+            {snippetTarget.type !== "image" && (
+              <textarea
+                className="edit-textarea"
+                placeholder="内容"
+                value={snippetContent}
+                onChange={e => setSnippetContent(e.target.value)}
+                spellCheck={false}
+              />
+            )}
             {snippetGroups.length > 0 && (
               <div className="group-chips">
                 {snippetGroups.map(g => (
@@ -832,11 +856,11 @@ const ItemRow = memo(function ItemRow({ item, index, selected, timeAgo, onPaste,
           <button onClick={(e) => { e.stopPropagation(); onEdit(item); }} title="查看">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
           </button>
-          <button onClick={(e) => { e.stopPropagation(); onToggleFavorite(item); }} className={item.favorite ? "action-active" : ""} title={item.favorite ? "移出片段" : "存为片段"}>
+          <button onClick={(e) => { e.stopPropagation(); onToggleFavorite(item); }} className={item.favorite ? "action-active" : ""} title={item.favorite ? "移出收藏" : "存为收藏"}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill={item.favorite ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
           </button>
           {item.favorite && (
-            <button onClick={(e) => { e.stopPropagation(); onSnippetEdit(item); }} title="编辑片段(命名/分组)">
+            <button onClick={(e) => { e.stopPropagation(); onSnippetEdit(item); }} title="编辑收藏(命名/分组/内容)">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/></svg>
             </button>
           )}
